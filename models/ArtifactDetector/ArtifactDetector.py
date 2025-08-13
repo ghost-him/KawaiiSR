@@ -162,7 +162,7 @@ class ArtifactDetector(nn.Module):
         self.aggregator_type = aggregator
 
         self.gray_downsample = nn.Conv2d(1, 1, kernel_size=5, padding=2, stride=2)
-
+        self.rgba_to_rgb_conv = nn.Conv2d(in_channels=4, out_channels=3, kernel_size=3, padding = 1)
         # --- Step 1: Input Preprocessing & Feature Engineering ---
         # 采用新的Sobel滤波器设计
         sobel_x_kernel = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
@@ -191,7 +191,7 @@ class ArtifactDetector(nn.Module):
         # --- Step 5: Final Classification ---
         self.classifier = nn.Sequential(
             nn.Linear(self.feature_dim, self.feature_dim // 2),
-            nn.GELU(inplace=True),
+            nn.GELU(),
             nn.Dropout(p=dropout_rate),
             nn.Linear(self.feature_dim // 2, 2) # Binary classification (artifact vs. no artifact)
         )
@@ -210,7 +210,7 @@ class ArtifactDetector(nn.Module):
         # --- Network Modification for 4-channel input ---
         original_conv1 = backbone.conv1
         new_conv1 = nn.Conv2d(
-            in_channels=5,
+            in_channels=6,
             out_channels=original_conv1.out_channels,
             kernel_size=original_conv1.kernel_size,
             stride=original_conv1.stride,
@@ -222,7 +222,7 @@ class ArtifactDetector(nn.Module):
         if pretrained:
             with torch.no_grad():
                 # Average the RGB weights to initialize the 4th channel's weights
-                mean_weights = original_conv1.weight.data.mean(dim=1, keepdim=True).repeat(1, 2, 1, 1)
+                mean_weights = original_conv1.weight.data.mean(dim=1, keepdim=True).repeat(1, 3, 1, 1)
                 new_weights = torch.cat([original_conv1.weight.data, mean_weights], dim=1)
                 new_conv1.weight.data = new_weights
 
@@ -252,6 +252,8 @@ class ArtifactDetector(nn.Module):
             raise ValueError("This model is designed to process one image at a time (batch size = 1).")
 
         # --- Step 1: Feature Engineering ---
+        if x.shape[1] == 4:
+            x = self.rgba_to_rgb_conv(x)
         x_gray = rgb_to_grayscale(x)
         x_gray_downsample = self.gray_downsample(x_gray)
         sobel_x_feat = self.sobel_x(x_gray_downsample)
@@ -262,10 +264,8 @@ class ArtifactDetector(nn.Module):
         # Downsample HPF feature to match DWT output size for concatenation
         h, w = lh.shape[-2:]
 
-        print(f"{hh.shape}")
-        print(f"{sobel_x_feat.shape}")
-        # Concatenate features: [HPF, DWT-LH, DWT-HL, DWT-HH]
-        feature_map = torch.cat([sobel_x_feat, sobel_y_feat, lh, hl, hh], dim=1)
+        # Concatenate features: [x_gray, sobel_x, sobel_y, DWT-LH, DWT-HL, DWT-HH]
+        feature_map = torch.cat([x_gray_downsample, sobel_x_feat, sobel_y_feat, lh, hl, hh], dim=1)
 
         # --- Step 2: Image Patching ---
         B, C, H, W = feature_map.shape
@@ -303,7 +303,7 @@ if __name__ == '__main__':
     print(f"Running on device: {device}")
     
     # Create a dummy high-resolution image (e.g., 1080p)
-    dummy_image = torch.rand(1, 3, 1080, 1920).to(device)
+    dummy_image = torch.rand(1, 4, 1080, 1920).to(device)
 
     print("\n--- Testing Model with Pooling Aggregator (Section 4.1) ---")
 
