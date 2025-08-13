@@ -392,6 +392,7 @@ fn process_svg(path: &Path, config: &Config) -> Result<Vec<(PathBuf, PathBuf)>> 
 /// 将 usvg Tree 渲染为 RgbaImage
 fn render_svg_to_rgba(tree: &usvg::Tree, size: u32) -> Result<RgbaImage> {
     let mut pixmap = tiny_skia::Pixmap::new(size, size).context("无法创建Pixmap")?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
     let transform = tiny_skia::Transform::from_scale(
         size as f32 / tree.size().width(),
         size as f32 / tree.size().height(),
