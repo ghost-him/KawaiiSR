@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use walkdir::WalkDir;
+pub mod strong_gt;
 // 使用 lazy_static 为 resvg 设置一个全局的、一次性的字体数据库
 lazy_static! {
     static ref FONT_DB: usvg::fontdb::Database = {
@@ -38,6 +39,9 @@ struct Cli {
     /// 用于存放高分辨率 (HR) 图像的子文件夹名称
     #[arg(long, default_value = "HR")]
     hr_dir_name: String,
+
+    #[arg(long, default_value = "Strong_HR")]
+    strong_hr_dir_name: String,
 
     /// 用于存放低分辨率 (LR) 图像的子文件夹名称
     #[arg(long, default_value = "LR")]
@@ -75,6 +79,10 @@ struct Cli {
     /// 跳过确认提示，直接开始处理
     #[arg(short, long)]
     yes: bool,
+
+    /// 要不要使用锐化来增强图片
+    #[arg(long)]
+    strong_hr: bool,
 }
 
 /// 解析后的配置结构体
@@ -83,6 +91,7 @@ struct Config {
     input_dir: PathBuf,
     output_dir: PathBuf,
     hr_path: PathBuf,
+    strong_hr_path: PathBuf,
     lr_path: PathBuf,
     scale: u32,
     svg_sizes: Vec<u32>,
@@ -91,6 +100,7 @@ struct Config {
     augment: bool,
     jpeg_quality: Vec<u8>,
     webp_quality: Vec<u8>,
+    strong_hr: bool,
 }
 
 fn main() -> Result<()> {
@@ -121,11 +131,13 @@ fn main() -> Result<()> {
 
     let hr_path = cli.output_dir.join(&cli.hr_dir_name);
     let lr_path = cli.output_dir.join(&cli.lr_dir_name);
+    let strong_hr_path = cli.output_dir.join(&cli.strong_hr_dir_name);
 
     let config = Config {
         input_dir: cli.input_dir,
         output_dir: cli.output_dir,
         hr_path,
+        strong_hr_path: strong_hr_path,
         lr_path,
         scale: cli.scale,
         svg_sizes,
@@ -134,6 +146,7 @@ fn main() -> Result<()> {
         augment: cli.augment,
         jpeg_quality,
         webp_quality,
+        strong_hr: cli.strong_hr,
     };
 
     // 打印配置并请求用户确认
@@ -141,6 +154,7 @@ fn main() -> Result<()> {
     println!("输入文件夹: {}", config.input_dir.display());
     println!("输出文件夹: {}", config.output_dir.display());
     println!("  - HR 文件夹: {}", config.hr_path.display());
+    println!("  - Strong_HR 文件夹: {}", config.strong_hr_path.display());
     println!("  - LR 文件夹: {}", config.lr_path.display());
     println!("缩放比例: x{}", config.scale);
     println!("\n--- 矢量图 (SVG) 配置 ---");
@@ -176,6 +190,10 @@ fn main() -> Result<()> {
     if !config.jpeg_quality.is_empty() || !config.webp_quality.is_empty() {
         println!("注意: 未压缩的LR版本也将被保存。");
     }
+    println!(
+        "锐化HR图像: {}",
+        if config.strong_hr { "是" } else { "否" }
+    );
     println!("-------------------------\n");
 
     if !cli.yes {
@@ -193,11 +211,14 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-
 /// 主处理函数
 fn run_processing(config: &Config) -> Result<()> {
-    println!("\n[1/4] 开始设置输出环境...");
+    println!("\n[1/5] 开始设置输出环境...");
     fs::create_dir_all(&config.hr_path).context("无法创建HR文件夹")?;
+    // 只有在需要时才创建 Strong_HR 文件夹，更节省资源
+    if config.strong_hr {
+        fs::create_dir_all(&config.strong_hr_path).context("无法创建Strong_HR文件夹")?;
+    }
     fs::create_dir_all(&config.lr_path).context("无法创建LR文件夹")?;
 
     let index_file_path = config.output_dir.join("dataset_index.csv");
@@ -212,7 +233,7 @@ fn run_processing(config: &Config) -> Result<()> {
             .context("无法写入CSV表头")?;
     }
 
-    println!("[2/4] 正在扫描输入文件...");
+    println!("[2/5] 正在扫描输入文件...");
     let paths: Vec<PathBuf> = WalkDir::new(&config.input_dir)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -230,7 +251,7 @@ fn run_processing(config: &Config) -> Result<()> {
     let processed_count = AtomicUsize::new(0);
     let log_interval = (total_files / 100).max(1); // 每处理1%的文件或至少1个文件时打印日志
 
-    println!("[3/4] 开始并行处理图像...");
+    println!("[3/5] 开始并行处理图像...");
 
     paths.into_par_iter().for_each(|path| {
         let current_count = processed_count.fetch_add(1, Ordering::SeqCst);
@@ -271,7 +292,64 @@ fn run_processing(config: &Config) -> Result<()> {
         }
     });
 
-    println!("[4/4] 处理完成！");
+    println!("[4/5] 开始生成锐化文件...");
+    if config.strong_hr {
+        println!("  -> 锐化功能已启用。正在处理 HR 图像...");
+
+        // 收集所有已生成的HR文件
+        let hr_files: Vec<PathBuf> = WalkDir::new(&config.hr_path)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.path().to_path_buf())
+            .collect();
+
+        let total_hr_files = hr_files.len();
+        if total_hr_files == 0 {
+            println!("  -> HR 文件夹中未找到任何文件进行锐化。");
+        } else {
+            println!("  -> 找到 {} 个 HR 图像进行锐化。", total_hr_files);
+            let sharpened_count = AtomicUsize::new(0);
+            let log_interval = (total_hr_files / 50).max(1); // 锐化进度条
+
+            hr_files.into_par_iter().for_each(|hr_path| {
+                let img = match image::open(&hr_path) {
+                    Ok(img) => img,
+                    Err(e) => {
+                        eprintln!("警告: 无法打开HR图像 {} 进行锐化: {}", hr_path.display(), e);
+                        return;
+                    }
+                };
+                
+                // 调用锐化函数，使用推荐的默认参数
+                let sharpened_img = strong_gt::anime_sharpen(&img, 2, 32);
+
+                if let Some(filename) = hr_path.file_name() {
+                    let strong_hr_filepath = config.strong_hr_path.join(filename);
+                    if let Err(e) = sharpened_img.save(&strong_hr_filepath) {
+                        eprintln!("错误: 无法保存锐化后的图像 {}: {}", strong_hr_filepath.display(), e);
+                    }
+                }
+
+                let count = sharpened_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if count % log_interval == 0 || count == total_hr_files {
+                     println!(
+                        "  -> 锐化进度: {}/{} ({:.2}%)",
+                        count,
+                        total_hr_files,
+                        (count as f32 / total_hr_files as f32) * 100.0
+                    );
+                }
+            });
+             println!("  -> 锐化处理完成。");
+        }
+    } else {
+        println!("  -> 锐化功能已跳过。");
+    }
+
+
+    println!("[5/5] 处理完成！");
     println!("数据集已生成在: {}", config.output_dir.display());
     println!("索引文件: {}", index_file_path.display());
 
