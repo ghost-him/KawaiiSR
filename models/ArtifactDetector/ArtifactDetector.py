@@ -5,6 +5,7 @@ import pywt
 import torchvision.models as models
 from torchvision.transforms.functional import rgb_to_grayscale
 import math
+from timm import create_model
 
 class WaveletTransform2D(nn.Module):
     """Compute a two-dimensional wavelet transform.
@@ -99,7 +100,7 @@ class TransformerAggregator(nn.Module):
     Transformer Encoder based aggregator for fusing patch features.
     Corresponds to Section 4.2 of the design document.
     """
-    def __init__(self, embed_dim=512, num_heads=8, num_layers=2, dropout=0.1):
+    def __init__(self, embed_dim=768, num_heads=8, num_layers=3, dropout=0.1):
         super().__init__()
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         # Using learnable positional encoding for simplicity and flexibility
@@ -111,7 +112,7 @@ class TransformerAggregator(nn.Module):
             nhead=num_heads,
             dropout=dropout,
             batch_first=True,
-            activation=F.relu
+            activation=F.gelu  # 使用GELU激活函数，与Swin Transformer保持一致
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -142,29 +143,33 @@ class TransformerAggregator(nn.Module):
 class ArtifactDetector(nn.Module):
     """
     High-Resolution Image Compression Artifact Detector.
-    Implements the architecture described in the design document.
+    Implements the architecture described in the design document with Swin Transformer V2 backbone.
     """
     def __init__(self,
-                 backbone_name: str = 'resnet18',
-                 aggregator: str = 'pooling', # 'pooling' or 'transformer'
+                 backbone_name: str = 'swinv2_tiny_window16_256',
                  pretrained: bool = True,
-                 patch_size: int = 224,
-                 dropout_rate: float = 0.5):
+                 patch_size: int = 256,
+                 dropout_rate: float = 0.1):
         super(ArtifactDetector, self).__init__()
         
         # --- Validate Inputs ---
-        if backbone_name not in ['resnet18', 'resnet34']:
-            raise ValueError("backbone_name must be 'resnet18' or 'resnet34'")
-        if aggregator not in ['pooling', 'transformer']:
-            raise ValueError("aggregator must be 'pooling' or 'transformer'")
+        valid_backbones = [
+            'swinv2_tiny_window16_256', 'swinv2_small_window16_256', 
+            'swinv2_base_window16_256', 'swinv2_tiny_window8_256',
+            'swinv2_small_window8_256', 'swinv2_base_window8_256'
+        ]
+        if backbone_name not in valid_backbones:
+            raise ValueError(f"backbone_name must be one of {valid_backbones}")
 
         self.patch_size = patch_size
-        self.aggregator_type = aggregator
+        self.backbone_name = backbone_name
 
+        # 输入预处理层
         self.gray_downsample = nn.Conv2d(1, 1, kernel_size=5, padding=2, stride=2)
-        self.rgba_to_rgb_conv = nn.Conv2d(in_channels=4, out_channels=3, kernel_size=3, padding = 1)
+        self.rgba_to_rgb_conv = nn.Conv2d(in_channels=4, out_channels=3, kernel_size=3, padding=1)
+        
         # --- Step 1: Input Preprocessing & Feature Engineering ---
-        # 采用新的Sobel滤波器设计
+        # Sobel滤波器
         sobel_x_kernel = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
         sobel_y_kernel = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32)
         
@@ -174,71 +179,91 @@ class ArtifactDetector(nn.Module):
         self.sobel_x.weight = nn.Parameter(sobel_x_kernel.reshape(1, 1, 3, 3), requires_grad=False)
         self.sobel_y.weight = nn.Parameter(sobel_y_kernel.reshape(1, 1, 3, 3), requires_grad=False)
 
-
         # Wavelet Transform (DWT)
         self.dwt = WaveletTransform2D(wavelet="haar")
 
-        # --- Step 3: Local Feature Extraction (Backbone) ---
-        self.backbone, self.feature_dim = self._create_backbone(backbone_name, pretrained)
+        # --- Step 3: Local Feature Extraction (Swin Transformer V2 Backbone) ---
+        self.backbone, self.feature_dim = self._create_swin_backbone(backbone_name, pretrained)
 
-        # --- Step 4: Global Feature Fusion ---
-        if self.aggregator_type == 'pooling':
-            # Max pooling will be done in the forward pass, no module needed.
-            pass
-        elif self.aggregator_type == 'transformer':
-            self.aggregator = TransformerAggregator(embed_dim=self.feature_dim, num_heads=8, num_layers=2, dropout=dropout_rate)
+        # --- Step 4: Global Feature Fusion (Transformer only) ---
+        self.aggregator = TransformerAggregator(
+            embed_dim=self.feature_dim, 
+            num_heads=16 if 'base' in backbone_name else 8, 
+            num_layers=3,
+            dropout=dropout_rate
+        )
 
         # --- Step 5: Final Classification ---
         self.classifier = nn.Sequential(
+            nn.LayerNorm(self.feature_dim),  # 添加LayerNorm
             nn.Linear(self.feature_dim, self.feature_dim // 2),
             nn.GELU(),
             nn.Dropout(p=dropout_rate),
-            nn.Linear(self.feature_dim // 2, 2) # Binary classification (artifact vs. no artifact)
+            nn.Linear(self.feature_dim // 2, 2) # Binary classification
         )
 
-    def _create_backbone(self, backbone_name, pretrained):
-        """Creates the ResNet backbone and modifies its first layer for 4-channel input."""
-        if backbone_name == 'resnet18':
-            weights = models.ResNet18_Weights.DEFAULT if pretrained else None
-            backbone = models.resnet18(weights=weights)
-            feature_dim = 512
-        else: # resnet34
-            weights = models.ResNet34_Weights.DEFAULT if pretrained else None
-            backbone = models.resnet34(weights=weights)
-            feature_dim = 512
+    def _create_swin_backbone(self, backbone_name, pretrained):
+        """Creates the Swin Transformer V2 backbone and modifies it for 6-channel input."""
+        # 创建Swin Transformer V2模型
+        backbone = create_model(
+            backbone_name, 
+            pretrained=pretrained,
+            num_classes=0,  # 移除分类头
+            global_pool=''  # 不使用全局池化
+        )
+        
+        # 获取特征维度
+        feature_dim_map = {
+            'tiny': 768,
+            'small': 768, 
+            'base': 1024
+        }
+        
+        if 'tiny' in backbone_name:
+            feature_dim = feature_dim_map['tiny']
+        elif 'small' in backbone_name:
+            feature_dim = feature_dim_map['small']
+        elif 'base' in backbone_name:
+            feature_dim = feature_dim_map['base']
+        else:
+            feature_dim = 768  # 默认值
 
-        # --- Network Modification for 4-channel input ---
-        original_conv1 = backbone.conv1
-        new_conv1 = nn.Conv2d(
-            in_channels=6,
-            out_channels=original_conv1.out_channels,
-            kernel_size=original_conv1.kernel_size,
-            stride=original_conv1.stride,
-            padding=original_conv1.padding,
-            bias=(original_conv1.bias is not None)
+        # 修改第一层的patch embedding以接受6通道输入
+        original_patch_embed = backbone.patch_embed.proj
+        new_patch_embed = nn.Conv2d(
+            in_channels=6,  # 修改为6通道
+            out_channels=original_patch_embed.out_channels,
+            kernel_size=original_patch_embed.kernel_size,
+            stride=original_patch_embed.stride,
+            padding=original_patch_embed.padding,
+            bias=(original_patch_embed.bias is not None)
         )
 
-        # Smartly initialize weights of the new layer from pretrained ones
+        # 智能初始化新层的权重
         if pretrained:
             with torch.no_grad():
-                # Average the RGB weights to initialize the 4th channel's weights
-                mean_weights = original_conv1.weight.data.mean(dim=1, keepdim=True).repeat(1, 3, 1, 1)
-                new_weights = torch.cat([original_conv1.weight.data, mean_weights], dim=1)
-                new_conv1.weight.data = new_weights
+                # 将原始3通道权重复制并扩展到6通道
+                original_weight = original_patch_embed.weight.data  # [out_channels, 3, h, w]
+                # 复制原始权重到前3个通道，后3个通道使用相同权重
+                new_weight = torch.cat([original_weight, original_weight], dim=1)
+                new_patch_embed.weight.data = new_weight
+                
+                if original_patch_embed.bias is not None:
+                    new_patch_embed.bias.data = original_patch_embed.bias.data.clone()
 
-        backbone.conv1 = new_conv1
-        backbone.fc = nn.Identity() # Remove final classifier
+        backbone.patch_embed.proj = new_patch_embed
+        
         return backbone, feature_dim
     
     def freeze_backbone(self):
-        """For Stage 1 of two-stage training: freezes the ResNet backbone."""
-        print("Freezing backbone weights.")
+        """For Stage 1 of two-stage training: freezes the Swin Transformer backbone."""
+        print("Freezing Swin Transformer backbone weights.")
         for param in self.backbone.parameters():
             param.requires_grad = False
             
     def unfreeze_backbone(self):
-        """For Stage 2 of two-stage training: unfreezes the ResNet backbone."""
-        print("Unfreezing backbone weights.")
+        """For Stage 2 of two-stage training: unfreezes the Swin Transformer backbone."""
+        print("Unfreezing Swin Transformer backbone weights.")
         for param in self.backbone.parameters():
             param.requires_grad = True
 
@@ -261,10 +286,7 @@ class ArtifactDetector(nn.Module):
 
         _, lh, hl, hh = self.dwt(x_gray)
         
-        # Downsample HPF feature to match DWT output size for concatenation
-        h, w = lh.shape[-2:]
-
-        # Concatenate features: [x_gray, sobel_x, sobel_y, DWT-LH, DWT-HL, DWT-HH]
+        # 连接特征: [x_gray, sobel_x, sobel_y, DWT-LH, DWT-HL, DWT-HH]
         feature_map = torch.cat([x_gray_downsample, sobel_x_feat, sobel_y_feat, lh, hl, hh], dim=1)
 
         # --- Step 2: Image Patching ---
@@ -277,16 +299,16 @@ class ArtifactDetector(nn.Module):
         patches = feature_map_padded.unfold(2, S, S).unfold(3, S, S)
         patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(-1, C, S, S)
 
-        # --- Step 3: Local Feature Extraction ---
-        local_features = self.backbone(patches)
+        # --- Step 3: Local Feature Extraction (Swin Transformer V2) ---
+        patch_feature_maps = self.backbone.forward_features(patches) 
 
-        # --- Step 4: Global Feature Aggregation ---
-        if self.aggregator_type == 'pooling':
-            # Max pooling: "if any patch has strong artifacts, the image has artifacts"
-            global_feature, _ = torch.max(local_features, dim=0)
-            global_feature = global_feature.unsqueeze(0)
-        else: # 'transformer'
-            global_feature = self.aggregator(local_features).unsqueeze(0)
+        # 添加一个全局平均池化层来聚合每个patch的特征图
+        # (num_patches, H', W', D) -> (num_patches, D)
+        # PyTorch的GAP需要 (N, C, H, W) 格式，所以需要permute
+        local_features = torch.mean(patch_feature_maps.permute(0, 3, 1, 2), dim=(2, 3))
+
+        # --- Step 4: Global Feature Aggregation (Transformer) ---
+        global_feature = self.aggregator(local_features).unsqueeze(0)  # [1, feature_dim]
             
         # --- Step 5: Final Classification ---
         logits = self.classifier(global_feature)
@@ -305,31 +327,35 @@ if __name__ == '__main__':
     # Create a dummy high-resolution image (e.g., 1080p)
     dummy_image = torch.rand(1, 4, 1080, 1920).to(device)
 
-    print("\n--- Testing Model with Pooling Aggregator (Section 4.1) ---")
+    print("\n--- Testing Model with Swin Transformer V2 + Transformer Aggregator ---")
 
-    model_pooling = ArtifactDetector(backbone_name='resnet18', aggregator='pooling').to(device)
-    model_pooling.eval()
-    with torch.no_grad():
-        output_pooling = model_pooling(dummy_image)
-    print(f"Input shape: {dummy_image.shape}")
-    print(f"Output logits shape (pooling): {output_pooling.shape}")
-    print(f"Output logits (pooling): {output_pooling.cpu().numpy()}")
-    
-    # Demonstrate the two-stage training functions
-    model_pooling.freeze_backbone()
-    model_pooling.unfreeze_backbone()
-
-
-    print("\n" + "="*50 + "\n")
-    
-    print("--- Testing Model with Transformer Aggregator (Section 4.2) ---")
     try:
-        model_transformer = ArtifactDetector(backbone_name='resnet18', aggregator='transformer').to(device)
-        model_transformer.eval()
+        model = ArtifactDetector(
+            backbone_name='swinv2_tiny_window16_256',
+            pretrained=True,
+            patch_size=256,
+            dropout_rate=0.1
+        ).to(device)
+        
+        model.eval()
         with torch.no_grad():
-            output_transformer = model_transformer(dummy_image)
+            output = model(dummy_image)
+        
         print(f"Input shape: {dummy_image.shape}")
-        print(f"Output logits shape (transformer): {output_transformer.shape}")
-        print(f"Output logits (transformer): {output_transformer.cpu().numpy()}")
+        print(f"Output logits shape: {output.shape}")
+        print(f"Output logits: {output.cpu().numpy()}")
+        
+        # 演示两阶段训练功能
+        model.freeze_backbone()
+        model.unfreeze_backbone()
+        
+        # 计算模型参数数量
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"\nTotal parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
+        
     except Exception as e:
-        print(f"Error with transformer model: {e}")
+        print(f"Error with Swin Transformer model: {e}")
+        import traceback
+        traceback.print_exc()
