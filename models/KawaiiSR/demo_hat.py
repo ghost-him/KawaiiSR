@@ -14,11 +14,13 @@ def demo():
     # 注意：初始化时的 img_size 主要用于计算相对位置编码等，但模型在前向传播时支持动态尺寸。
     # 只要初始化的 img_size 不小于 window_size，模型就能很好地处理各种尺寸的输入。
     model = HAT(
-        img_size=64,
+        image_size=64,
+        patch_size=4,
         window_size=window_size,
         depths=(2, 2, 2, 2),     # 使用较浅的深度以加速
-        num_heads=(4, 4, 4, 4),    # 使用较少的头
-        embed_dim=48,            # 使用较小的维度
+        num_heads=(2, 2, 2, 2),    # 使用较少的头
+        hid_channels=48,            # 使用较小的维度
+        out_channels=32,
         # upscale 在模型中硬编码为 2
     )
     model.eval()  # 切换到评估模式，这会禁用Dropout等层
@@ -62,8 +64,8 @@ def demo():
     print(f"期望的输出形状: torch.Size([1, 3, {h2 * scale}, {w2 * scale}])")
 
      # 4. Demo 3: 验证超高分辨率支持
-    print("\n--- Demo 3: 超高分辨率尺寸 (2160x1440) ---")
-    h3, w3 = 1440, 2160
+    print("\n--- Demo 3: 超高分辨率尺寸 (1280x720) ---")
+    h3, w3 = 512, 512
     
     # 同样确保输入尺寸可以被window_size整除
     assert h3 % window_size == 0 and w3 % window_size == 0, \

@@ -6,10 +6,10 @@ from KawaiiSR import KawaiiSR
 window_size = 16
 
 model = KawaiiSR(
-    img_size=64,
-    window_size=window_size,
-    depths=(2, 2, 2, 2),     # 使用较浅的深度以加速
-    num_heads=(4, 4, 4, 4),    # 使用较少的头
+    image_size=64,
+    hat_window_size=window_size,
+    hat_depths=(2, 2, 2, 2),     # 使用较浅的深度以加速
+    hat_num_heads=(4, 4, 4, 4),    # 使用较少的头
     embed_dim=48,            # 使用较小的维度
     # upscale 在模型中硬编码为 2
 )

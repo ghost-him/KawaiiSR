@@ -674,11 +674,11 @@ class HAT(nn.Module):
     """
 
     def __init__(self,
-                 img_size=64,
+                 image_size=64,
                  patch_size=1,
-                 in_chans=3,
-                 out_chans = 64,
-                 embed_dim=96,
+                 in_channels=3,
+                 out_channels = 64,
+                 hid_channels=96,
                  depths=(6, 6, 6, 6),
                  num_heads=(6, 6, 6, 6),
                  window_size=7,
@@ -702,7 +702,7 @@ class HAT(nn.Module):
         self.shift_size = window_size // 2
         self.overlap_ratio = overlap_ratio
 
-        num_in_ch = in_chans
+        num_in_ch = in_channels
         # relative position index
         relative_position_index_SA = self.calculate_rpi_sa()
         relative_position_index_OCA = self.calculate_rpi_oca()
@@ -710,21 +710,21 @@ class HAT(nn.Module):
         self.register_buffer('relative_position_index_OCA', relative_position_index_OCA)
 
         # ------------------------- 1, shallow feature extraction ------------------------- #
-        self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
+        self.conv_first = nn.Conv2d(num_in_ch, hid_channels, 3, 1, 1)
 
         # ------------------------- 2, deep feature extraction ------------------------- #
         self.num_layers = len(depths)
-        self.embed_dim = embed_dim
+        self.embed_dim = hid_channels
         self.patch_norm = patch_norm
-        self.num_features = embed_dim
+        self.num_features = hid_channels
         self.mlp_ratio = mlp_ratio
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
-            img_size=img_size,
+            img_size=image_size,
             patch_size=patch_size,
-            in_chans=embed_dim,
-            embed_dim=embed_dim,
+            in_chans=hid_channels,
+            embed_dim=hid_channels,
             norm_layer=norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
@@ -732,10 +732,10 @@ class HAT(nn.Module):
 
         # merge non-overlapping patches into image
         self.patch_unembed = PatchUnEmbed(
-            img_size=img_size,
+            img_size=image_size,
             patch_size=patch_size,
-            in_chans=embed_dim,
-            embed_dim=embed_dim,
+            in_chans=hid_channels,
+            embed_dim=hid_channels,
             norm_layer=norm_layer if self.patch_norm else None)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -747,7 +747,7 @@ class HAT(nn.Module):
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = RHAG(
-                dim=embed_dim,
+                dim=hid_channels,
                 input_resolution=(patches_resolution[0], patches_resolution[1]),
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
@@ -763,7 +763,7 @@ class HAT(nn.Module):
                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],  # no impact on SR results
                 norm_layer=norm_layer,
                 use_checkpoint=use_checkpoint,
-                img_size=img_size,
+                img_size=image_size,
                 patch_size=patch_size,
                 resi_connection=resi_connection)
             self.layers.append(layer)
@@ -771,7 +771,7 @@ class HAT(nn.Module):
 
         # build the last conv layer in deep feature extraction
         if resi_connection == '1conv':
-            self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
+            self.conv_after_body = nn.Conv2d(hid_channels, hid_channels, 3, 1, 1)
         elif resi_connection == 'identity':
             self.conv_after_body = nn.Identity()
 
@@ -779,12 +779,12 @@ class HAT(nn.Module):
 
         # for classical SR
         self.conv_before_upsample = nn.Sequential(
-            nn.Conv2d(embed_dim, out_chans, 3, 1, 1), 
+            nn.Conv2d(hid_channels, out_channels, 3, 1, 1), 
             nn.LeakyReLU(inplace=True), 
-            CAB(num_feat=out_chans, compress_ratio=compress_ratio, squeeze_factor=squeeze_factor)
+            CAB(num_feat=out_channels, compress_ratio=compress_ratio, squeeze_factor=squeeze_factor)
         )
         self.upsample = nn.Sequential(
-            nn.Conv2d(out_chans, 4 * out_chans, 3, 1, 1),
+            nn.Conv2d(out_channels, 4 * out_channels, 3, 1, 1),
             nn.PixelShuffle(2)
         )
         
