@@ -670,7 +670,6 @@ class HAT(nn.Module):
         norm_layer (nn.Module): Normalization layer. Default: nn.LayerNorm.
         patch_norm (bool): If True, add normalization after patch embedding. Default: True
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False
-        img_range: Image range. 1. or 255.
         resi_connection: The convolutional block before residual connection. '1conv'/'3conv'
     """
 
@@ -678,6 +677,7 @@ class HAT(nn.Module):
                  img_size=64,
                  patch_size=1,
                  in_chans=3,
+                 out_chans = 64,
                  embed_dim=96,
                  depths=(6, 6, 6, 6),
                  num_heads=(6, 6, 6, 6),
@@ -694,7 +694,6 @@ class HAT(nn.Module):
                  norm_layer=nn.LayerNorm,
                  patch_norm=True,
                  use_checkpoint=False,
-                 img_range=1.,
                  resi_connection='1conv',
                  **kwargs):
         super(HAT, self).__init__()
@@ -704,15 +703,6 @@ class HAT(nn.Module):
         self.overlap_ratio = overlap_ratio
 
         num_in_ch = in_chans
-        num_out_ch = in_chans
-        num_feat = 64
-        self.img_range = img_range
-        if in_chans == 3:
-            rgb_mean = (0.4488, 0.4371, 0.4040)
-            self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
-        else:
-            self.mean = torch.zeros(1, 1, 1, 1)
-
         # relative position index
         relative_position_index_SA = self.calculate_rpi_sa()
         relative_position_index_OCA = self.calculate_rpi_oca()
@@ -789,14 +779,15 @@ class HAT(nn.Module):
 
         # for classical SR
         self.conv_before_upsample = nn.Sequential(
-            nn.Conv2d(embed_dim, num_feat, 3, 1, 1), nn.LeakyReLU(inplace=True))
+            nn.Conv2d(embed_dim, out_chans, 3, 1, 1), 
+            nn.LeakyReLU(inplace=True), 
+            CAB(num_feat=out_chans, compress_ratio=compress_ratio, squeeze_factor=squeeze_factor)
+        )
         self.upsample = nn.Sequential(
-            nn.Conv2d(num_feat, 4 * num_feat, 3, 1, 1),
+            nn.Conv2d(out_chans, 4 * out_chans, 3, 1, 1),
             nn.PixelShuffle(2)
         )
         
-        self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -896,15 +887,9 @@ class HAT(nn.Module):
         return x
 
     def forward(self, x):
-        self.mean = self.mean.type_as(x)
-        x = (x - self.mean) * self.img_range
-
         # for classical SR
         x = self.conv_first(x)
         x = self.conv_after_body(self.forward_features(x)) + x
         x = self.conv_before_upsample(x)
-        x = self.conv_last(self.upsample(x))
-
-        x = x / self.img_range + self.mean
-
+        x = self.upsample(x)
         return x
