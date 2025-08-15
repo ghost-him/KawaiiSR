@@ -157,8 +157,8 @@ class ResidualBlock(nn.Module):
             hid = self.feature_blocks[i](hid)
             hid = hid + y
 
-        out_x = self.last_conv(hid)
-        out_x = self.cab(out_x)
+        out_x = self.last_conv(hid) + hid
+        out_x = self.cab(out_x) + out_x
         return out_x
 
 

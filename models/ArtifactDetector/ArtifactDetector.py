@@ -111,8 +111,8 @@ class TransformerAggregator(nn.Module):
             d_model=embed_dim,
             nhead=num_heads,
             dropout=dropout,
-            batch_first=True,
-            activation=F.gelu  # 使用GELU激活函数，与Swin Transformer保持一致
+            batch_first=True,  # batch_first=True is crucial
+            activation=F.gelu
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
@@ -120,25 +120,26 @@ class TransformerAggregator(nn.Module):
         )
 
     def forward(self, x):
-        # x shape: (N, E), where N is number of patches, E is embed_dim
-        # Add a batch dimension -> (1, N, E)
-        x = x.unsqueeze(0)
+        # x shape: (B, N, E), where B is batch size, N is number of patches, E is embed_dim
         B, N, E = x.shape
 
         # Prepend CLS token
+        # cls_token is (1, 1, E), expand it to (B, 1, E) for the batch
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1) # (B, N+1, E)
 
         # Add positional encoding
+        # pos_embed is (1, 501, E), it will be broadcasted across the batch dimension
         x = x + self.pos_embed[:, :(N + 1)]
 
         # Pass through transformer
         output = self.transformer_encoder(x) # (B, N+1, E)
 
-        # Get the CLS token output which serves as the global feature
+        # Get the CLS token output for each item in the batch
         cls_output = output[:, 0] # (B, E)
-        return cls_output.squeeze(0) # (E,) for this project's pipeline
-
+        
+        # Return the batch of global features
+        return cls_output # (B, E)
 
 class ArtifactDetector(nn.Module):
     """
@@ -268,12 +269,11 @@ class ArtifactDetector(nn.Module):
 
     def forward(self, x: torch.Tensor, return_features: bool = False):
         """
-        Processes a single high-resolution image.
+        Processes a batch of high-resolution images.
         Args:
-            x (torch.Tensor): Input image tensor of shape (1, 3, H, W). Batch size must be 1.
+            x (torch.Tensor): Input image tensor of shape (B, 3, H, W).
         """
-        if x.shape[0] != 1:
-            raise ValueError("This model is designed to process one image at a time (batch size = 1).")
+        B = x.shape[0]
 
         # --- Step 1: Feature Engineering ---
         x_gray = rgb_to_grayscale(x)
@@ -283,11 +283,12 @@ class ArtifactDetector(nn.Module):
 
         _, lh, hl, hh = self.dwt(x_gray)
         
-        # 连接特征: [x_gray, sobel_x, sobel_y, DWT-LH, DWT-HL, DWT-HH]
         feature_map = torch.cat([x_gray_downsample, sobel_x_feat, sobel_y_feat, lh, hl, hh], dim=1)
 
         # --- Step 2: Image Patching ---
-        B, C, H, W = feature_map.shape
+        # Note: This assumes all images in the batch have the same dimensions (H, W).
+        # If not, they must be pre-processed (e.g., padded) to the same size.
+        _B, C, H, W = feature_map.shape 
         S = self.patch_size
         pad_h = (S - H % S) % S
         pad_w = (S - W % S) % S
@@ -295,20 +296,21 @@ class ArtifactDetector(nn.Module):
 
         patches = feature_map_padded.unfold(2, S, S).unfold(3, S, S)
         patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(-1, C, S, S)
+        # patches shape: (B * num_patches_per_image, C, S, S)
 
         # --- Step 3: Local Feature Extraction (Swin Transformer V2) ---
         patch_feature_maps = self.backbone.forward_features(patches) 
-
-        # 添加一个全局平均池化层来聚合每个patch的特征图
-        # (num_patches, H', W', D) -> (num_patches, D)
-        # PyTorch的GAP需要 (N, C, H, W) 格式，所以需要permute
         local_features = torch.mean(patch_feature_maps.permute(0, 3, 1, 2), dim=(2, 3))
-
+        # local_features shape: (B * num_patches_per_image, feature_dim)
+        
         # --- Step 4: Global Feature Aggregation (Transformer) ---
-        global_feature = self.aggregator(local_features).unsqueeze(0)  # [1, feature_dim]
+        # Reshape from (B * N, D) to (B, N, D)
+        local_features_batched = local_features.view(B, -1, self.feature_dim)
+        
+        global_feature = self.aggregator(local_features_batched)  # [B, feature_dim]
             
         # --- Step 5: Final Classification ---
-        logits = self.classifier(global_feature)
+        logits = self.classifier(global_feature) # [B, 2]
 
         if return_features:
             return logits, global_feature
@@ -322,7 +324,7 @@ if __name__ == '__main__':
     print(f"Running on device: {device}")
     
     # Create a dummy high-resolution image (e.g., 1080p)
-    dummy_image = torch.rand(1, 3, 1080, 1920).to(device)
+    dummy_image = torch.rand(4, 3, 1080, 1920).to(device)
 
     print("\n--- Testing Model with Swin Transformer V2 + Transformer Aggregator ---")
 

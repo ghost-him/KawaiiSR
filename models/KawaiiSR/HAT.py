@@ -73,7 +73,7 @@ class ChannelAttention(nn.Module):
         self.attention = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(num_feat, num_feat // squeeze_factor, 1, padding=0),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Conv2d(num_feat // squeeze_factor, num_feat, 1, padding=0),
             nn.Sigmoid())
 
