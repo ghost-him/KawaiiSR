@@ -190,10 +190,7 @@ fn main() -> Result<()> {
     if !config.jpeg_quality.is_empty() || !config.webp_quality.is_empty() {
         println!("注意: 未压缩的LR版本也将被保存。");
     }
-    println!(
-        "锐化HR图像: {}",
-        if config.strong_hr { "是" } else { "否" }
-    );
+    println!("锐化HR图像: {}", if config.strong_hr { "是" } else { "否" });
     println!("-------------------------\n");
 
     if !cli.yes {
@@ -321,20 +318,24 @@ fn run_processing(config: &Config) -> Result<()> {
                         return;
                     }
                 };
-                
+
                 // 调用锐化函数，使用推荐的默认参数
                 let sharpened_img = strong_gt::anime_sharpen(&img, 2, 32);
 
                 if let Some(filename) = hr_path.file_name() {
                     let strong_hr_filepath = config.strong_hr_path.join(filename);
                     if let Err(e) = sharpened_img.save(&strong_hr_filepath) {
-                        eprintln!("错误: 无法保存锐化后的图像 {}: {}", strong_hr_filepath.display(), e);
+                        eprintln!(
+                            "错误: 无法保存锐化后的图像 {}: {}",
+                            strong_hr_filepath.display(),
+                            e
+                        );
                     }
                 }
 
                 let count = sharpened_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if count % log_interval == 0 || count == total_hr_files {
-                     println!(
+                    println!(
                         "  -> 锐化进度: {}/{} ({:.2}%)",
                         count,
                         total_hr_files,
@@ -342,12 +343,11 @@ fn run_processing(config: &Config) -> Result<()> {
                     );
                 }
             });
-             println!("  -> 锐化处理完成。");
+            println!("  -> 锐化处理完成。");
         }
     } else {
         println!("  -> 锐化功能已跳过。");
     }
-
 
     println!("[5/5] 处理完成！");
     println!("数据集已生成在: {}", config.output_dir.display());
@@ -424,12 +424,8 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(PathBuf, PathBuf)
     let is_multi_patch = patches.len() > 1;
 
     for (i, patch) in patches.into_iter().enumerate() {
-        // 1. 首先确保图块是 RGBA 格式
-        let rgba_patch = ensure_rgba(&patch);
-
-        // 2. 然后在 RgbaImage 上进行裁剪
-        let (w, h) = rgba_patch.dimensions();
-        // 确保图像尺寸为偶数，这是许多模型的要求
+        // 1. 裁剪图像以确保尺寸是偶数，这是许多模型的要求
+        let (w, h) = patch.dimensions();
         let new_w = w - (w % 2);
         let new_h = h - (h % 2);
 
@@ -437,9 +433,9 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(PathBuf, PathBuf)
             continue;
         }
 
-        // crop_imm 返回 SubImage, .to_image() 将其转换为新的 RgbaImage
-        let base_hr_image = image::imageops::crop_imm(&rgba_patch, 0, 0, new_w, new_h).to_image();
-        
+        // crop_imm 返回 SubImage, .to_image() 将其转换回新的 DynamicImage
+        let base_hr_image = patch.crop_imm(0, 0, new_w, new_h);
+
         // 为图块创建唯一的名称
         let patch_stem = if is_multi_patch {
             format!("{}_p{}", stem, i)
@@ -465,7 +461,11 @@ fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicIm
 
     let mut y = 0;
     while y < height {
-        let actual_y = if y + patch_size > height { height.saturating_sub(patch_size) } else { y };
+        let actual_y = if y + patch_size > height {
+            height.saturating_sub(patch_size)
+        } else {
+            y
+        };
         let mut x = 0;
         while x < width {
             let actual_x = if x + patch_size > width {
@@ -489,178 +489,111 @@ fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicIm
     patches
 }
 
-/// 处理单个图像（或图块），应用下采样、增强和压缩。
+/// 处理单个图像（或图块），并分派给基础版本和增强版本进行处理。
 fn process_single_patch(
-    base_hr_image: &RgbaImage,
+    base_hr_image: &DynamicImage,
     stem: &str,
     config: &Config,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mut pairs = Vec::new();
+    let mut all_pairs = Vec::new();
 
     // --- 1. 处理原始（基础）图像 ---
     let base_hr_filename = format!("{}_hr.png", stem);
-    let base_hr_filepath = config.hr_path.join(&base_hr_filename);
-    base_hr_image.save_with_format(&base_hr_filepath, ImageFormat::Png)?;
-
-    let (hr_w, hr_h) = base_hr_image.dimensions();
-    let lr_w = hr_w / config.scale;
-    let lr_h = hr_h / config.scale;
-
-    if lr_w > 0 && lr_h > 0 {
-        for (filter_name, filter_type) in &config.downsample_filters {
-            let uncompressed_lr = image::imageops::resize(base_hr_image, lr_w, lr_h, *filter_type);
-
-            // 保存未压缩的LR图像
-            let lr_filename = format!("{}_{}_x{}_lr.png", stem, filter_name, config.scale);
-            let lr_filepath = config.lr_path.join(&lr_filename);
-            uncompressed_lr.save_with_format(&lr_filepath, ImageFormat::Png)?;
-            pairs.push((lr_filename.into(), base_hr_filename.clone().into()));
-
-            // 应用并保存JPEG压缩版本
-            for &quality in &config.jpeg_quality {
-                let mut buffer = Vec::new();
-                JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buffer), quality)
-                    .encode_image(&uncompressed_lr)?;
-                let compressed_img = image::load_from_memory(&buffer)?;
-
-                let lr_filename_jpeg = format!(
-                    "{}_{}_q{}_jpeg_x{}_lr.png",
-                    stem, filter_name, quality, config.scale
-                );
-                let lr_filepath_jpeg = config.lr_path.join(&lr_filename_jpeg);
-                ensure_rgba(&compressed_img)
-                    .save_with_format(&lr_filepath_jpeg, ImageFormat::Png)?;
-                pairs.push((lr_filename_jpeg.into(), base_hr_filename.clone().into()));
-            }
-
-            // 应用并保存WebP压缩版本
-            for &quality in &config.webp_quality {
-                // 1. 从RGBA图像数据创建 webp 编码器
-                let encoder = webp::Encoder::from_rgba(
-                    uncompressed_lr.as_raw(),
-                    uncompressed_lr.width(),
-                    uncompressed_lr.height(),
-                );
-                // 2. 使用指定的质量进行有损编码 (quality是0-100的浮点数)
-                let memory = encoder.encode(quality as f32);
-                // 3. 将编码后的webp数据加载回来，以便统一保存为png
-                let compressed_img =
-                    image::load_from_memory_with_format(&memory, ImageFormat::WebP)?;
-
-                let lr_filename_webp = format!(
-                    "{}_{}_q{}_webp_x{}_lr.png",
-                    stem, filter_name, quality, config.scale
-                );
-                let lr_filepath_webp = config.lr_path.join(&lr_filename_webp);
-                ensure_rgba(&compressed_img)
-                    .save_with_format(&lr_filepath_webp, ImageFormat::Png)?;
-                pairs.push((lr_filename_webp.into(), base_hr_filename.clone().into()));
-            }
-        }
-    }
+    let base_pairs = generate_lrs_and_save(base_hr_image, &base_hr_filename, config)?;
+    all_pairs.extend(base_pairs);
 
     // --- 2. 如果启用了数据增强，则处理增强版本 ---
     if config.augment {
         let mut augmentations = HashMap::new();
-        augmentations.insert("hflip", image::imageops::flip_horizontal(base_hr_image));
-        augmentations.insert("rot90", image::imageops::rotate90(base_hr_image));
+        augmentations.insert("hflip", base_hr_image.fliph().flipv());
+        augmentations.insert("rot90", base_hr_image.rotate90());
 
         for (aug_name, aug_hr_image) in augmentations {
             let aug_hr_filename = format!("{}_{}_hr.png", stem, aug_name);
-            let aug_hr_filepath = config.hr_path.join(&aug_hr_filename);
-            aug_hr_image.save_with_format(&aug_hr_filepath, ImageFormat::Png)?;
-
-            let (hr_w, hr_h) = aug_hr_image.dimensions();
-            let lr_w = hr_w / config.scale;
-            let lr_h = hr_h / config.scale;
-
-            if lr_w == 0 || lr_h == 0 {
-                continue;
-            }
-
-            for (filter_name, filter_type) in &config.downsample_filters {
-                let uncompressed_lr =
-                    image::imageops::resize(&aug_hr_image, lr_w, lr_h, *filter_type);
-
-                // 保存未压缩的增强版LR图像
-                let lr_filename = format!(
-                    "{}_{}_{}_x{}_lr.png",
-                    stem, aug_name, filter_name, config.scale
-                );
-                let lr_filepath = config.lr_path.join(&lr_filename);
-                uncompressed_lr.save_with_format(&lr_filepath, ImageFormat::Png)?;
-                pairs.push((lr_filename.into(), aug_hr_filename.clone().into()));
-
-                // 应用并保存JPEG压缩的增强版
-                for &quality in &config.jpeg_quality {
-                    let mut buffer = Vec::new();
-                    JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buffer), quality)
-                        .encode_image(&uncompressed_lr)?;
-                    let compressed_img = image::load_from_memory(&buffer)?;
-
-                    let lr_filename_jpeg = format!(
-                        "{}_{}_{}_q{}_jpeg_x{}_lr.png",
-                        stem, aug_name, filter_name, quality, config.scale
-                    );
-                    let lr_filepath_jpeg = config.lr_path.join(&lr_filename_jpeg);
-                    ensure_rgba(&compressed_img)
-                        .save_with_format(&lr_filepath_jpeg, ImageFormat::Png)?;
-                    pairs.push((lr_filename_jpeg.into(), aug_hr_filename.clone().into()));
-                }
-
-                // 应用并保存WebP压缩的增强版
-                for &quality in &config.webp_quality {
-                    let encoder = webp::Encoder::from_rgba(
-                        uncompressed_lr.as_raw(),
-                        uncompressed_lr.width(),
-                        uncompressed_lr.height(),
-                    );
-                    let memory = encoder.encode(quality as f32);
-                    let compressed_img =
-                        image::load_from_memory_with_format(&memory, ImageFormat::WebP)?;
-
-                    let lr_filename_webp = format!(
-                        "{}_{}_{}_q{}_webp_x{}_lr.png",
-                        stem, aug_name, filter_name, quality, config.scale
-                    );
-                    let lr_filepath_webp = config.lr_path.join(&lr_filename_webp);
-                    ensure_rgba(&compressed_img)
-                        .save_with_format(&lr_filepath_webp, ImageFormat::Png)?;
-                    pairs.push((lr_filename_webp.into(), aug_hr_filename.clone().into()));
-                }
-            }
+            let aug_pairs = generate_lrs_and_save(&aug_hr_image, &aug_hr_filename, config)?;
+            all_pairs.extend(aug_pairs);
         }
     }
 
-    Ok(pairs)
+    Ok(all_pairs)
 }
-/// 确保图像是Rgba8格式，处理灰度和RGB图像
-fn ensure_rgba(img: &DynamicImage) -> RgbaImage {
-    match img {
-        DynamicImage::ImageRgba8(rgba) => rgba.clone(),
-        DynamicImage::ImageRgb8(rgb) => {
-            let mut rgba = RgbaImage::new(rgb.width(), rgb.height());
-            for (x, y, pixel) in rgb.enumerate_pixels() {
-                rgba.put_pixel(x, y, Rgba([pixel[0], pixel[1], pixel[2], 255]));
-            }
-            rgba
-        }
-        DynamicImage::ImageLuma8(luma) => {
-            let mut rgba = RgbaImage::new(luma.width(), luma.height());
-            for (x, y, pixel) in luma.enumerate_pixels() {
-                rgba.put_pixel(x, y, Rgba([pixel[0], pixel[0], pixel[0], 255]));
-            }
-            rgba
-        }
-        DynamicImage::ImageLumaA8(luma_a) => {
-            let mut rgba = RgbaImage::new(luma_a.width(), luma_a.height());
-            for (x, y, pixel) in luma_a.enumerate_pixels() {
-                rgba.put_pixel(x, y, Rgba([pixel[0], pixel[0], pixel[0], pixel[1]]));
-            }
-            rgba
-        }
-        _ => img.to_rgba8(), // 其他格式的通用转换
+
+/// (新函数) 为给定的HR图像生成并保存所有版本的LR图像。
+/// 这个函数现在是核心逻辑，处理下采样、压缩和文件保存。
+fn generate_lrs_and_save(
+    hr_image: &DynamicImage,
+    hr_filename: &str,
+    config: &Config,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut pairs = Vec::new();
+    let hr_filepath = config.hr_path.join(hr_filename);
+
+    // 保存HR图像，它会根据自身的格式（RGB/RGBA）来保存
+    hr_image.save_with_format(&hr_filepath, ImageFormat::Png)?;
+
+    let (hr_w, hr_h) = hr_image.dimensions();
+    let lr_w = hr_w / config.scale;
+    let lr_h = hr_h / config.scale;
+
+    if lr_w == 0 || lr_h == 0 {
+        return Ok(pairs); // 尺寸太小，无法生成LR图像
     }
+
+    // 从HR文件名中提取用于LR文件名的基础部分
+    let stem = Path::new(hr_filename)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace("_hr", "");
+
+    for (filter_name, filter_type) in &config.downsample_filters {
+        // `resize` 保留了颜色格式。如果输入是RGB，输出也是RGB。
+        let uncompressed_lr_buffer = image::imageops::resize(hr_image, lr_w, lr_h, *filter_type);
+        let uncompressed_lr_img = DynamicImage::from(uncompressed_lr_buffer);
+
+        // 保存未压缩的LR图像
+        let lr_filename = format!("{}_{}_x{}_lr.png", stem, filter_name, config.scale);
+        let lr_filepath = config.lr_path.join(&lr_filename);
+        uncompressed_lr_img.save_with_format(&lr_filepath, ImageFormat::Png)?;
+        pairs.push((lr_filename.into(), hr_filename.to_string().into()));
+
+        // 应用并保存JPEG压缩版本
+        for &quality in &config.jpeg_quality {
+            let mut buffer = Vec::new();
+            JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buffer), quality)
+                .encode_image(&uncompressed_lr_img)?;
+            let compressed_img = image::load_from_memory(&buffer)?;
+
+            let lr_filename_jpeg = format!(
+                "{}_{}_q{}_jpeg_x{}_lr.png",
+                stem, filter_name, quality, config.scale
+            );
+            let lr_filepath_jpeg = config.lr_path.join(&lr_filename_jpeg);
+            compressed_img.save_with_format(&lr_filepath_jpeg, ImageFormat::Png)?;
+            pairs.push((lr_filename_jpeg.into(), hr_filename.to_string().into()));
+        }
+
+        // 应用并保存WebP压缩版本
+        for &quality in &config.webp_quality {
+            // WebP编码器需要RGBA数据，所以这里我们按需转换
+            let rgba_lr = uncompressed_lr_img.to_rgba8();
+
+            let encoder =
+                webp::Encoder::from_rgba(rgba_lr.as_raw(), rgba_lr.width(), rgba_lr.height());
+            let memory = encoder.encode(quality as f32);
+            let compressed_img = image::load_from_memory_with_format(&memory, ImageFormat::WebP)?;
+
+            let lr_filename_webp = format!(
+                "{}_{}_q{}_webp_x{}_lr.png",
+                stem, filter_name, quality, config.scale
+            );
+            let lr_filepath_webp = config.lr_path.join(&lr_filename_webp);
+            compressed_img.save_with_format(&lr_filepath_webp, ImageFormat::Png)?;
+            pairs.push((lr_filename_webp.into(), hr_filename.to_string().into()));
+        }
+    }
+    Ok(pairs)
 }
 
 /// 解析逗号分隔的字符串为 FilterType 枚举

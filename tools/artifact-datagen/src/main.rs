@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use csv::Writer;
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
+use image::{DynamicImage, GenericImageView, ImageFormat, Rgb, RgbImage};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use rayon::prelude::*;
@@ -246,7 +246,7 @@ fn process_svg(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
     for &size in &config.svg_sizes {
         let base_stem = format!("{}_{}", stem, size);
 
-        let gt_image = render_svg_to_rgba(&tree, size)?;
+        let gt_image = render_svg_to_rgb(&tree, size)?;
         let records = generate_compressed_versions(&gt_image, &base_stem, config)?;
         all_records.extend(records);
     }
@@ -254,15 +254,23 @@ fn process_svg(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
 }
 
 /// 将 usvg Tree 渲染为 RgbaImage (无变动)
-fn render_svg_to_rgba(tree: &usvg::Tree, size: u32) -> Result<RgbaImage> {
+fn render_svg_to_rgb(tree: &usvg::Tree, size: u32) -> Result<RgbImage> {
     let mut pixmap = tiny_skia::Pixmap::new(size, size).context("无法创建Pixmap")?;
     let transform = tiny_skia::Transform::from_scale(
         size as f32 / tree.size().width(),
         size as f32 / tree.size().height(),
     );
     resvg::render(tree, transform, &mut pixmap.as_mut());
-    let img = RgbaImage::from_raw(size, size, pixmap.data().to_vec())
-        .context("无法从Pixmap数据创建图像")?;
+
+    let rgba_data = pixmap.data();
+    let mut rgb_data = Vec::with_capacity((size * size * 3) as usize);
+    for chunk in rgba_data.chunks_exact(4) {
+        // 仅提取 R, G, B 通道，忽略 Alpha 通道 (chunk[3])
+        rgb_data.extend_from_slice(&chunk[0..3]);
+    }
+
+    let img = RgbImage::from_raw(size, size, rgb_data)
+        .context("无法从Pixmap数据创建RGB图像")?;
     Ok(img)
 }
 
@@ -287,13 +295,16 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
     let is_multi_patch = patches.len() > 1;
 
     for (i, patch) in patches.into_iter().enumerate() {
-        let rgba_patch = ensure_rgba(&patch);
+        // 改动: 调用 ensure_rgb 并重命名变量
+        let rgb_patch = ensure_rgb(&patch);
         
-        let (w, h) = rgba_patch.dimensions();
+        let (w, h) = rgb_patch.dimensions();
+        // 确保图像尺寸为偶数，这对某些压缩算法（如JPEG的某些子采样模式）是必需的
         let new_w = w - (w % 2);
         let new_h = h - (h % 2);
         if new_w == 0 || new_h == 0 { continue; }
-        let base_gt_image = image::imageops::crop_imm(&rgba_patch, 0, 0, new_w, new_h).to_image();
+        // 改动: 使用 rgb_patch 进行裁剪
+        let base_gt_image = image::imageops::crop_imm(&rgb_patch, 0, 0, new_w, new_h).to_image();
         
         let patch_stem = if is_multi_patch {
             format!("{}_p{}", stem, i)
@@ -309,6 +320,7 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
 
     Ok(all_records)
 }
+
 
 /// 将图像裁剪成图块 (无变动)
 fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicImage> {
@@ -333,7 +345,8 @@ fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicIm
 
 /// 处理单个图像（或图块），应用增强并生成压缩版本。
 fn process_single_image(
-    base_gt_image: &RgbaImage,
+    // 改动: 签名类型从 RgbaImage 变为 RgbImage
+    base_gt_image: &RgbImage,
     stem: &str,
     config: &Config,
 ) -> Result<Vec<(String, u8)>> {
@@ -346,6 +359,7 @@ fn process_single_image(
     // 2. 如果启用了数据增强，则处理增强版本
     if config.augment {
         let mut augmentations = HashMap::new();
+        // imageops 操作对 RgbImage 同样适用
         augmentations.insert("hflip", image::imageops::flip_horizontal(base_gt_image));
         augmentations.insert("rot90", image::imageops::rotate90(base_gt_image));
 
@@ -363,7 +377,8 @@ fn process_single_image(
 /// 从给定的 Ground Truth 图像生成所有配置的压缩版本，并返回 (文件名, 标签) 记录。
 /// 标签 0 代表原始图像，标签 1 代表压缩图像。
 fn generate_compressed_versions(
-    gt_image: &RgbaImage,
+    // 改动: 签名类型从 RgbaImage 变为 RgbImage
+    gt_image: &RgbImage,
     stem: &str,
     config: &Config,
 ) -> Result<Vec<(String, u8)>> {
@@ -378,19 +393,22 @@ fn generate_compressed_versions(
     // 2. 应用并保存JPEG压缩版本, 记录为标签 1
     for &quality in &config.jpeg_quality {
         let mut buffer = Vec::new();
+        // JpegEncoder 可以直接处理 RgbImage
         JpegEncoder::new_with_quality(&mut std::io::Cursor::new(&mut buffer), quality)
             .encode_image(gt_image)?;
         let compressed_img = image::load_from_memory(&buffer)?;
 
         let compressed_filename = format!("{}_q{}_jpeg.png", stem, quality);
         let compressed_filepath = config.images_path.join(&compressed_filename);
-        ensure_rgba(&compressed_img).save_with_format(&compressed_filepath, ImageFormat::Png)?;
+        // 改动: 调用 ensure_rgb
+        ensure_rgb(&compressed_img).save_with_format(&compressed_filepath, ImageFormat::Png)?;
         records.push((compressed_filename, 1)); // 标签 1 表示已压缩
     }
 
     // 3. 应用并保存WebP压缩版本, 记录为标签 1
     for &quality in &config.webp_quality {
-        let encoder = webp::Encoder::from_rgba(
+        // 改动: 使用 Encoder::from_rgb 替代 from_rgba
+        let encoder = webp::Encoder::from_rgb(
             gt_image.as_raw(),
             gt_image.width(),
             gt_image.height(),
@@ -400,7 +418,8 @@ fn generate_compressed_versions(
 
         let compressed_filename = format!("{}_q{}_webp.png", stem, quality);
         let compressed_filepath = config.images_path.join(&compressed_filename);
-        ensure_rgba(&compressed_img).save_with_format(&compressed_filepath, ImageFormat::Png)?;
+        // 改动: 调用 ensure_rgb
+        ensure_rgb(&compressed_img).save_with_format(&compressed_filepath, ImageFormat::Png)?;
         records.push((compressed_filename, 1)); // 标签 1 表示已压缩
     }
 
@@ -408,17 +427,19 @@ fn generate_compressed_versions(
 }
 
 
-/// 确保图像是Rgba8格式 (无变动)
-fn ensure_rgba(img: &DynamicImage) -> RgbaImage {
+/// 确保图像是Rgb8格式
+// 改动: 整个函数被重写为 ensure_rgb
+fn ensure_rgb(img: &DynamicImage) -> RgbImage {
     match img {
-        DynamicImage::ImageRgba8(rgba) => rgba.clone(),
-        DynamicImage::ImageRgb8(rgb) => {
-            let mut rgba = RgbaImage::new(rgb.width(), rgb.height());
-            for (x, y, pixel) in rgb.enumerate_pixels() {
-                rgba.put_pixel(x, y, Rgba([pixel[0], pixel[1], pixel[2], 255]));
+        DynamicImage::ImageRgb8(rgb) => rgb.clone(),
+        DynamicImage::ImageRgba8(rgba) => {
+            // 从 RGBA 转换为 RGB，丢弃 alpha 通道
+            let mut rgb = RgbImage::new(rgba.width(), rgba.height());
+            for (x, y, pixel) in rgba.enumerate_pixels() {
+                rgb.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
             }
-            rgba
+            rgb
         }
-        _ => img.to_rgba8(),
+        _ => img.to_rgb8(),
     }
 }

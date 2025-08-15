@@ -173,7 +173,7 @@ class KawaiiSR(nn.Module):
                  tile_pad: int = 10,
                  hat_patch_size=1,
                  hat_hid_channels=96,
-                 hat_channels_out = 64,
+                 hat_out_channels = 64,
                  hat_depths=(6, 6, 6, 6),
                  hat_num_heads=(6, 6, 6, 6),
                  hat_window_size=7,
@@ -200,7 +200,7 @@ class KawaiiSR(nn.Module):
         rgb_mean = (0.5, 0.5, 0.5)
         self.img_range = image_range
         self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
-        self.hat_out_channels = hat_channels_out
+        self.hat_out_channels = hat_out_channels
         self.window_size = hat_window_size
         self.hat_model = HAT(
             image_size=image_size,

@@ -166,8 +166,7 @@ class ArtifactDetector(nn.Module):
 
         # 输入预处理层
         self.gray_downsample = nn.Conv2d(1, 1, kernel_size=5, padding=2, stride=2)
-        self.rgba_to_rgb_conv = nn.Conv2d(in_channels=4, out_channels=3, kernel_size=3, padding=1)
-        
+
         # --- Step 1: Input Preprocessing & Feature Engineering ---
         # Sobel滤波器
         sobel_x_kernel = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32)
@@ -277,8 +276,6 @@ class ArtifactDetector(nn.Module):
             raise ValueError("This model is designed to process one image at a time (batch size = 1).")
 
         # --- Step 1: Feature Engineering ---
-        if x.shape[1] == 4:
-            x = self.rgba_to_rgb_conv(x)
         x_gray = rgb_to_grayscale(x)
         x_gray_downsample = self.gray_downsample(x_gray)
         sobel_x_feat = self.sobel_x(x_gray_downsample)
@@ -325,7 +322,7 @@ if __name__ == '__main__':
     print(f"Running on device: {device}")
     
     # Create a dummy high-resolution image (e.g., 1080p)
-    dummy_image = torch.rand(1, 4, 1080, 1920).to(device)
+    dummy_image = torch.rand(1, 3, 1080, 1920).to(device)
 
     print("\n--- Testing Model with Swin Transformer V2 + Transformer Aggregator ---")
 
