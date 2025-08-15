@@ -4,22 +4,28 @@ import torch.nn.functional as F
 import pywt
 from HAT import HAT, CAB
 import math
-
 class WaveletTransform2D(nn.Module):
-    """Compute a two-dimensional wavelet transform.
+    """
+    Compute a two-dimensional wavelet transform.
+
+    This revised version behaves like a standard CNN downsampling layer,
+    halving the spatial dimensions for even-sized inputs.
+
+    Example:
     loss = nn.MSELoss()
-    data = torch.rand(1, 3, 128, 256)
-    DWT = WaveletTransform2D()
-    IDWT = WaveletTransform2D(inverse=True)
+    # Use an even-sized input for perfect reconstruction example
+    data = torch.rand(1, 3, 128, 256) 
+    DWT = WaveletTransform2D(wavelet="sym4")
+    IDWT = WaveletTransform2D(wavelet="sym4", inverse=True)
 
     LL, LH, HL, HH = DWT(data) # (B, C, H / 2, W / 2) * 4
-    recdata = IDWT([LL, LH, HL, HH])
-    print(loss(data, recdata))
+    recdata = IDWT([LL, LH, HL, HH], original_size=data.shape)
+    print(f"Reconstruction Loss: {loss(data, recdata)}")
     """
 
-    def __init__(self, inverse=False, wavelet="haar", mode="constant"):
+    def __init__(self, inverse=False, wavelet="haar", dtype=torch.float32):
         super(WaveletTransform2D, self).__init__()
-        self.mode = mode
+        
         wavelet = pywt.Wavelet(wavelet)
 
         if isinstance(wavelet, tuple):
@@ -29,13 +35,20 @@ class WaveletTransform2D(nn.Module):
 
         self.inverse = inverse
         if inverse is False:
-            dec_lo = torch.tensor(dec_lo).flip(-1).unsqueeze(0)
-            dec_hi = torch.tensor(dec_hi).flip(-1).unsqueeze(0)
-            self.build_filters(dec_lo, dec_hi)
+            # Forward DWT filters
+            lo = torch.tensor(dec_lo, dtype=dtype).flip(-1).unsqueeze(0)
+            hi = torch.tensor(dec_hi, dtype=dtype).flip(-1).unsqueeze(0)
         else:
-            rec_lo = torch.tensor(rec_lo).unsqueeze(0)
-            rec_hi = torch.tensor(rec_hi).unsqueeze(0)
-            self.build_filters(rec_lo, rec_hi)
+            # Inverse DWT filters
+            lo = torch.tensor(rec_lo, dtype=dtype).unsqueeze(0)
+            hi = torch.tensor(rec_hi, dtype=dtype).unsqueeze(0)
+        
+        self.build_filters(lo, hi)
+        
+        # Calculate padding to behave like a standard strided convolution
+        # P = (KernelSize - Stride) / 2 for 'same' output, but for stride=2,
+        # we need P = (KernelSize - 2) / 2 to halve the dimension.
+        self.padding = (self.dim_size - 2) // 2
 
     def build_filters(self, lo, hi):
         # construct 2d filter
@@ -56,41 +69,37 @@ class WaveletTransform2D(nn.Module):
         b_mul = torch.unsqueeze(b_flat, dim=0)
         return a_mul * b_mul
 
-    def get_pad(self, data_len: int, filter_len: int):
-        padr = (2 * filter_len - 3) // 2
-        padl = (2 * filter_len - 3) // 2
-        # pad to even singal length.
-        if data_len % 2 != 0:
-            padr += 1
-        return padr, padl
 
-    def adaptive_pad(self, data):
-        padb, padt = self.get_pad(data.shape[-2], self.dim_size)
-        padr, padl = self.get_pad(data.shape[-1], self.dim_size)
-
-        data_pad = torch.nn.functional.pad(
-            data, [padl, padr, padt, padb], mode=self.mode
-        )
-        return data_pad
-
-    def forward(self, data):
+    def forward(self, data, original_size=None):
         if self.inverse is False:
             b, c, h, w = data.shape
             dec_res = []
-            data = self.adaptive_pad(data)
-            for filter in self.filters:
+            # We apply padding directly in the conv2d function
+            for f in self.filters:
                 dec_res.append(
-                    torch.nn.functional.conv2d(
-                        data, filter.repeat(c, 1, 1, 1), stride=2, groups=c
+                    F.conv2d(
+                        data, f.repeat(c, 1, 1, 1), 
+                        stride=2, 
+                        groups=c,
+                        padding=self.padding # Use calculated padding
                     )
                 )
             return dec_res
         else:
+            # Inverse transform
             b, c, h, w = data[0].shape
             data = torch.stack(data, dim=2).reshape(b, -1, h, w)
-            rec_res = torch.nn.functional.conv_transpose2d(
-                data, self.filters.repeat(c, 1, 1, 1), stride=2, groups=c
+            rec_res = F.conv_transpose2d(
+                data, self.filters.repeat(c, 1, 1, 1), 
+                stride=2, 
+                groups=c,
+                padding=self.padding # Use calculated padding
             )
+            
+            if original_size is not None:
+                _, _, H, W = original_size
+                rec_res = rec_res[..., :H, :W]
+            
             return rec_res
 
 class BigConv(nn.Module):
@@ -125,8 +134,8 @@ class ResidualBlock(nn.Module):
 
         self.cab = CAB(num_feat=out_channels, squeeze_factor=out_channels // 8)
 
-        self.dwt = WaveletTransform2D()
-        self.idwt = WaveletTransform2D(inverse=True)
+        self.dwt = WaveletTransform2D(wavelet="sym4")
+        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True)
 
         self.lf_branch = nn.Sequential(
             BigConv(in_channels=out_channels, out_channels=out_channels),
