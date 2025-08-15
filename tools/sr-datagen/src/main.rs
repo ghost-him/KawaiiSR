@@ -576,12 +576,23 @@ fn generate_lrs_and_save(
 
         // 应用并保存WebP压缩版本
         for &quality in &config.webp_quality {
-            // WebP编码器需要RGBA数据，所以这里我们按需转换
-            let rgba_lr = uncompressed_lr_img.to_rgba8();
-
-            let encoder =
-                webp::Encoder::from_rgba(rgba_lr.as_raw(), rgba_lr.width(), rgba_lr.height());
-            let memory = encoder.encode(quality as f32);
+            // 将整个编码逻辑放入 match 语句中，使其返回最终的编码结果
+            let memory: webp::WebPMemory = match &uncompressed_lr_img {
+                DynamicImage::ImageRgb8(rgb_img) => {
+                    // 在这个分支中，完成所有与 RGB 相关的编码工作
+                    let encoder =
+                        webp::Encoder::from_rgb(rgb_img.as_raw(), rgb_img.width(), rgb_img.height());
+                    encoder.encode(quality as f32)
+                }
+                _ => {
+                    // 在这个分支中，完成所有与 RGBA 相关的编码工作
+                    let rgba_lr = uncompressed_lr_img.to_rgba8();
+                    let encoder =
+                        webp::Encoder::from_rgba(rgba_lr.as_raw(), rgba_lr.width(), rgba_lr.height());
+                    // rgba_lr 在这里仍然存活，所以 encoder 可以安全使用它
+                    encoder.encode(quality as f32)
+                }
+            };
             let compressed_img = image::load_from_memory_with_format(&memory, ImageFormat::WebP)?;
 
             let lr_filename_webp = format!(
@@ -589,6 +600,8 @@ fn generate_lrs_and_save(
                 stem, filter_name, quality, config.scale
             );
             let lr_filepath_webp = config.lr_path.join(&lr_filename_webp);
+
+            // compressed_img 是一个 DynamicImage，直接保存就能保持正确的颜色格式
             compressed_img.save_with_format(&lr_filepath_webp, ImageFormat::Png)?;
             pairs.push((lr_filename_webp.into(), hr_filename.to_string().into()));
         }
