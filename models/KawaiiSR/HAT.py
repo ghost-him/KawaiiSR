@@ -14,6 +14,19 @@ import warnings
 from einops import rearrange
 from timm.layers import trunc_normal_
 
+class BigConv(nn.Module):
+    def __init__(self, in_channels, out_channels, use_bias=True):
+        super(BigConv, self).__init__()
+        self.net = nn.Sequential(
+            # 深度可分离卷积
+            nn.Conv2d(in_channels, in_channels, kernel_size=5, padding=4, dilation=2, 
+                     groups=in_channels, bias=use_bias),
+            nn.GELU(),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=use_bias),
+            nn.GELU(),
+        )
+    def forward(self, x):
+        return self.net(x)
 
 ########################## 来自于 basic_sr: https://github.com/XPixelGroup/BasicSR ##############
 
@@ -677,8 +690,9 @@ class HAT(nn.Module):
                  image_size=64,
                  patch_size=1,
                  in_channels=3,
-                 out_channels = 64,
-                 hid_channels=96,
+                 out_channels = 3,
+                 body_hid_channels=96,
+                 upsampler_hid_channels=64,
                  depths=(6, 6, 6, 6),
                  num_heads=(6, 6, 6, 6),
                  window_size=7,
@@ -710,21 +724,21 @@ class HAT(nn.Module):
         self.register_buffer('relative_position_index_OCA', relative_position_index_OCA)
 
         # ------------------------- 1, shallow feature extraction ------------------------- #
-        self.conv_first = nn.Conv2d(num_in_ch, hid_channels, 3, 1, 1)
+        self.conv_first = nn.Conv2d(num_in_ch, body_hid_channels, 3, 1, 1)
 
         # ------------------------- 2, deep feature extraction ------------------------- #
         self.num_layers = len(depths)
-        self.embed_dim = hid_channels
+        self.embed_dim = body_hid_channels
         self.patch_norm = patch_norm
-        self.num_features = hid_channels
+        self.num_features = body_hid_channels
         self.mlp_ratio = mlp_ratio
 
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=image_size,
             patch_size=patch_size,
-            in_chans=hid_channels,
-            embed_dim=hid_channels,
+            in_chans=body_hid_channels,
+            embed_dim=body_hid_channels,
             norm_layer=norm_layer if self.patch_norm else None)
         num_patches = self.patch_embed.num_patches
         patches_resolution = self.patch_embed.patches_resolution
@@ -734,8 +748,8 @@ class HAT(nn.Module):
         self.patch_unembed = PatchUnEmbed(
             img_size=image_size,
             patch_size=patch_size,
-            in_chans=hid_channels,
-            embed_dim=hid_channels,
+            in_chans=body_hid_channels,
+            embed_dim=body_hid_channels,
             norm_layer=norm_layer if self.patch_norm else None)
 
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -747,7 +761,7 @@ class HAT(nn.Module):
         self.layers = nn.ModuleList()
         for i_layer in range(self.num_layers):
             layer = RHAG(
-                dim=hid_channels,
+                dim=body_hid_channels,
                 input_resolution=(patches_resolution[0], patches_resolution[1]),
                 depth=depths[i_layer],
                 num_heads=num_heads[i_layer],
@@ -771,7 +785,7 @@ class HAT(nn.Module):
 
         # build the last conv layer in deep feature extraction
         if resi_connection == '1conv':
-            self.conv_after_body = nn.Conv2d(hid_channels, hid_channels, 3, 1, 1)
+            self.conv_after_body = nn.Conv2d(body_hid_channels, body_hid_channels, 3, 1, 1)
         elif resi_connection == 'identity':
             self.conv_after_body = nn.Identity()
 
@@ -779,14 +793,16 @@ class HAT(nn.Module):
 
         # for classical SR
         self.conv_before_upsample = nn.Sequential(
-            nn.Conv2d(hid_channels, out_channels, 3, 1, 1), 
+            nn.Conv2d(body_hid_channels, upsampler_hid_channels, 3, 1, 1), 
             nn.LeakyReLU(inplace=True), 
-            CAB(num_feat=out_channels, compress_ratio=compress_ratio, squeeze_factor=squeeze_factor)
+            CAB(num_feat=upsampler_hid_channels, compress_ratio=compress_ratio, squeeze_factor=squeeze_factor)
         )
         self.upsample = nn.Sequential(
-            nn.Conv2d(out_channels, 4 * out_channels, 3, 1, 1),
+            nn.Conv2d(upsampler_hid_channels, 4 * upsampler_hid_channels, 3, 1, 1),
             nn.PixelShuffle(2)
         )
+
+        self.conv_after_upsample = BigConv(in_channels=upsampler_hid_channels, out_channels = out_channels)
         
         self.apply(self._init_weights)
 
@@ -892,4 +908,5 @@ class HAT(nn.Module):
         x = self.conv_after_body(self.forward_features(x)) + x
         x = self.conv_before_upsample(x)
         x = self.upsample(x)
+        x = self.conv_after_upsample(x)
         return x

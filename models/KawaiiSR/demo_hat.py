@@ -19,7 +19,7 @@ def demo():
         window_size=window_size,
         depths=(2, 2, 2, 2),     # 使用较浅的深度以加速
         num_heads=(2, 2, 2, 2),    # 使用较少的头
-        hid_channels=48,            # 使用较小的维度
+        body_hid_channels=48,            # 使用较小的维度
         out_channels=32,
         # upscale 在模型中硬编码为 2
     )

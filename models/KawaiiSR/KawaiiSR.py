@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pywt
-from HAT import HAT, CAB
+from HAT import HAT, CAB, BigConv
 import math
+
 class WaveletTransform2D(nn.Module):
     """
     Compute a two-dimensional wavelet transform.
@@ -102,19 +103,7 @@ class WaveletTransform2D(nn.Module):
             
             return rec_res
 
-class BigConv(nn.Module):
-    def __init__(self, in_channels, out_channels, use_bias=True):
-        super(BigConv, self).__init__()
-        self.net = nn.Sequential(
-            # 深度可分离卷积
-            nn.Conv2d(in_channels, in_channels, kernel_size=5, padding=4, dilation=2, 
-                     groups=in_channels, bias=use_bias),
-            nn.GELU(),
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=use_bias),
-            nn.GELU(),
-        )
-    def forward(self, x):
-        return self.net(x)
+
 
 class ResidualBlock(nn.Module):
     """
@@ -130,9 +119,9 @@ class ResidualBlock(nn.Module):
             BigConv(in_channels=out_channels, out_channels=out_channels)
             for _ in range(num_layers)
         ])
-        self.last_conv = BigConv(in_channels=out_channels, out_channels=out_channels)
+        self.last_conv = BigConv(in_channels=out_channels * (num_layers + 1), out_channels=out_channels)
 
-        self.cab = CAB(num_feat=out_channels, squeeze_factor=out_channels // 8)
+        self.cab = CAB(num_feat=out_channels, squeeze_factor=max(out_channels // 8, 1))
 
         self.dwt = WaveletTransform2D(wavelet="sym4")
         self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True)
@@ -161,12 +150,15 @@ class ResidualBlock(nn.Module):
         
         y = y + wave_out
 
+        out_features = [y]
         hid = y
         for i in range(self.num_layers):
             hid = self.feature_blocks[i](hid)
+            out_features.append(hid)
             hid = hid + y
 
-        out_x = self.last_conv(hid) + hid
+        out_features = torch.cat(out_features, dim = 1)
+        out_x = self.last_conv(out_features) + y
         out_x = self.cab(out_x) + out_x
         return out_x
 
@@ -176,13 +168,12 @@ class KawaiiSR(nn.Module):
                  image_size=64,
                  in_channels=3,
                  image_range = 1.,
-                 hid_channels = 32,
                  use_tiling: bool = False,
                  tile_size: int = 256,
                  tile_pad: int = 10,
                  hat_patch_size=1,
-                 hat_hid_channels=96,
-                 hat_out_channels = 64,
+                 hat_body_hid_channels=96,
+                 hat_upsampler_hid_channels=64,
                  hat_depths=(6, 6, 6, 6),
                  hat_num_heads=(6, 6, 6, 6),
                  hat_window_size=7,
@@ -209,14 +200,15 @@ class KawaiiSR(nn.Module):
         rgb_mean = (0.5, 0.5, 0.5)
         self.img_range = image_range
         self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
-        self.hat_out_channels = hat_out_channels
         self.window_size = hat_window_size
+        self.in_channels = in_channels
         self.hat_model = HAT(
             image_size=image_size,
             patch_size=hat_patch_size,
             in_channels=in_channels,
-            out_channels=self.hat_out_channels,
-            hid_channels=hat_hid_channels,
+            out_channels=in_channels,
+            body_hid_channels=hat_body_hid_channels,
+            upsampler_hid_channels=hat_upsampler_hid_channels,
             depths=hat_depths,
             num_heads=hat_num_heads,
             window_size=hat_window_size,
@@ -235,8 +227,9 @@ class KawaiiSR(nn.Module):
             resi_connection=hat_resi_connection,
         )
 
-        self.residual_block = ResidualBlock(num_layers=4, in_channels=self.hat_out_channels + in_channels, out_channels=hid_channels)
-        self.out_conv = nn.Conv2d(in_channels=hid_channels, out_channels=3, kernel_size=3, padding=1)
+        self.fusion_conv = BigConv(in_channels=in_channels * 2, out_channels=in_channels)
+
+        self.residual_block = ResidualBlock(num_layers=4, in_channels=in_channels, out_channels=in_channels)
 
     def _calculate_padding(self, height, width):
         """计算需要添加的padding"""
@@ -249,7 +242,7 @@ class KawaiiSR(nn.Module):
         b, c, h, w = x.shape
         output_h = h * self.scale
         output_w = w * self.scale
-        output_shape = (b, self.hat_out_channels, output_h, output_w)
+        output_shape = (b, self.in_channels, output_h, output_w)
 
         # 创建一个空的输出张量用于拼接结果
         hat_output = x.new_zeros(output_shape)
@@ -331,17 +324,18 @@ class KawaiiSR(nn.Module):
         # 先生成一个基础的上采样的图像
         bicubic_x = F.interpolate(x_norm, size=target_size, mode='bicubic', align_corners=False)
         
-        # 将HAT的输出和bicubic上采样的结果拼接
-        x_concat = torch.cat([hat_x, bicubic_x], dim=1)
-        
+        gate_features = torch.cat([hat_x, bicubic_x], dim=1)
+
+        # 5. 融合
+        x_out = self.fusion_conv(gate_features)
+
         # 通过残差模块和输出卷积
-        x_res = self.residual_block(x_concat)
-        x_out = self.out_conv(x_res)
+        x_out = self.residual_block(x_out)
         
-        # 5. 反归一化
+        # 6. 反归一化
         x_final = x_out / self.img_range + self.mean
 
-        # 6. 后处理：裁剪掉之前添加的padding
+        # 7. 后处理：裁剪掉之前添加的padding
         if pad_h > 0 or pad_w > 0:
             target_h = original_h * self.scale
             target_w = original_w * self.scale
