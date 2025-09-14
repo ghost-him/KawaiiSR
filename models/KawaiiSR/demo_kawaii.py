@@ -42,15 +42,15 @@ def demo(device: str):
     window_size = 16
     scale = 2
     model = KawaiiSR(
-        image_size = 64,
+        image_size = 128,
         in_channels=3,
-        use_tiling= True,
+        use_tiling= False,
         tile_size = 32,
         tile_pad = 16,
         hat_body_hid_channels=180,
         hat_upsampler_hid_channels=64,
-        hat_depths=(6, 6, 6, 6, 6, 6),
-        hat_num_heads=(6, 6, 6, 6, 6, 6),
+        hat_depths=(6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
+        hat_num_heads=(6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
         hat_window_size=window_size,
         hat_compress_ratio=3,
         hat_squeeze_factor=30,
@@ -67,8 +67,8 @@ def demo(device: str):
     
     # 3. 运行不同尺寸的推理演示
     run_inference_and_print(model, "Demo 1: 标准输入尺寸", (64, 64), scale, device)
-    run_inference_and_print(model, "Demo 2: 动态输入尺寸", (17, 73), scale, device)
-    run_inference_and_print(model, "Demo 3: 较大的正方形尺寸", (1280, 720), scale, device)
+    run_inference_and_print(model, "Demo 2: 动态输入尺寸", (128, 128), scale, device)
+    run_inference_and_print(model, "Demo 3: 较大的正方形尺寸", (128, 128), scale, device)
 
 
 if __name__ == '__main__':

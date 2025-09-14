@@ -8,6 +8,8 @@ import numpy as np
 from typing import Tuple, Optional, List
 import pandas as pd
 from pathlib import Path
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+
 
 class SRDataset(Dataset):
     """超分辨率数据集，基于CSV索引文件加载预处理的数据"""
@@ -36,14 +38,17 @@ class SRDataset(Dataset):
         # 定义变换（仅标准化，无数据增强）
         self.to_tensor = transforms.ToTensor()
         self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        
+
+        # 评估指标（在使用时再移动到正确的设备）
+        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
     def _validate_files(self):
         """验证CSV中列出的文件是否存在"""
         missing_files = []
         
         for idx, row in self.data_index.iterrows():
-            lr_path = self.data_path / row['lr_image_path']
-            hr_path = self.data_path / row['hr_image_path']
+            lr_path = self.data_path / 'LR' / row['lr_image_path']
+            hr_path = self.data_path / 'HR' / row['hr_image_path']
             
             if not lr_path.exists():
                 missing_files.append(str(lr_path))
@@ -62,8 +67,8 @@ class SRDataset(Dataset):
         # 过滤掉缺失文件的行
         valid_indices = []
         for idx, row in self.data_index.iterrows():
-            lr_path = self.data_path / row['lr_image_path']
-            hr_path = self.data_path / row['hr_image_path']
+            lr_path = self.data_path / 'LR' / row['lr_image_path']
+            hr_path = self.data_path / 'HR' / row['hr_image_path']
             if lr_path.exists() and hr_path.exists():
                 valid_indices.append(idx)
         
@@ -91,8 +96,8 @@ class SRDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         # 从CSV索引获取文件路径
         row = self.data_index.iloc[idx]
-        lr_path = self.data_path / row['lr_image_path']
-        hr_path = self.data_path / row['hr_image_path']
+        lr_path = self.data_path / 'LR' / row['lr_image_path']
+        hr_path = self.data_path / 'HR' / row['hr_image_path']
         
         # 加载预处理的图像
         lr_tensor = self._load_image(lr_path)

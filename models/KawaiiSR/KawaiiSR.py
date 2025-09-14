@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pywt
-from HAT import HAT, CAB, BigConv
+from .HAT import HAT, CAB, BigConv
 import math
 
 class WaveletTransform2D(nn.Module):

@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from CharbonnierLoss import CharbonnierLoss
-from LaplacianLoss import LaplacianLoss
-from HingeGANLoss import HingeDiscriminatorLoss, HingeGeneratorLoss
-from AnimePerceptualLoss import AnimePerceptualLoss
+from .CharbonnierLoss import CharbonnierLoss
+from .LaplacianLoss import LaplacianLoss
+from .HingeGANLoss import HingeDiscriminatorLoss, HingeGeneratorLoss
+from .AnimePerceptualLoss import AnimePerceptualLoss
 
-from VGGPerceptualLoss import VGGPerceptualLoss
+from .VGGPerceptualLoss import VGGPerceptualLoss
 class KawaiiLoss(nn.Module):
     """
     用于超分辨率生成器的综合损失函数。
@@ -86,31 +86,31 @@ class KawaiiLoss(nn.Module):
         loss_components = {}
         total_loss = 0
         
-        # 计算并累加各项损失
+        # 计算并累加各项损失（统一键名）
         if self.lambda_char > 0:
             loss_char = self.char_loss(sr_img, hr_img)
-            loss_components['char'] = loss_char.item()
+            loss_components['pixel'] = loss_char.item()
             total_loss += self.lambda_char * loss_char
         
         if self.lambda_lap > 0:
             loss_lap = self.lap_loss(sr_img, hr_img)
-            loss_components['lap'] = loss_lap.item()
+            loss_components['frequency'] = loss_lap.item()
             total_loss += self.lambda_lap * loss_lap
 
         if self.lambda_perc > 0 and self.perc_loss is not None:
             loss_perc = self.perc_loss(sr_img, hr_img)
-            loss_components['perc'] = loss_perc.item()
+            loss_components['perceptual'] = loss_perc.item()
             total_loss += self.lambda_perc * loss_perc
 
         if self.lambda_adv > 0:
             loss_adv = self.adv_loss(fake_logits)
-            loss_components['adv'] = loss_adv.item()
+            loss_components['adversarial'] = loss_adv.item()
             total_loss += self.lambda_adv * loss_adv
         
 
             
         if self.lambda_vgg > 0:
-            loss_vgg = self.vgg_loss(sr_img, hr_image)
+            loss_vgg = self.vgg_loss(sr_img, hr_img)
             loss_components['vgg'] = loss_vgg.item()
             total_loss += self.lambda_vgg * loss_vgg
 

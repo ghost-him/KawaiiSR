@@ -5,12 +5,10 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 from pathlib import Path
 
-from .trainer_base import BaseTrainer
-from .train_config import TrainingConfig, StageConfig
-from .loss.KawaiiLoss import KawaiiLoss
-
-from .loss.DiscriminatorLoss import DiscriminatorLoss
-from .Discriminator.UNetDiscriminatorSN import UNetDiscriminatorSN
+from trainer_base import BaseTrainer
+from train_config import TrainingConfig, StageConfig
+from loss.KawaiiLoss import KawaiiLoss
+from Discriminator.UNetDiscriminatorSN import UNetDiscriminatorSN
 
 class KawaiiSRTrainer(BaseTrainer):
     """KawaiiSR三阶段训练器"""
@@ -41,10 +39,6 @@ class KawaiiSRTrainer(BaseTrainer):
             device=device
         )
         
-        self.discriminator_loss = DiscriminatorLoss(
-            gan_weight=getattr(config, 'gan_weight', 0.1),
-            device=device
-        )
         
 
         
@@ -125,18 +119,29 @@ class KawaiiSRTrainer(BaseTrainer):
         total_loss = 0.0
         
         # 1. KawaiiLoss (包含像素、感知、频率损失)
-        kawaii_loss_dict = self.kawaii_loss(sr_images, hr_images)
-        kawaii_total = kawaii_loss_dict['total_loss']
+        # 为第一阶段提供虚拟的fake_logits（因为没有判别器）
+        if stage_config.name == "stage1":
+            fake_logits = torch.zeros(sr_images.shape[0], 1, device=sr_images.device)
+        else:
+            fake_logits = self.discriminator(sr_images)
         
-        # 分别记录各个子损失
-        if weights['pixel'] > 0:
-            loss_components['pixel'] = kawaii_loss_dict['pixel_loss'].item()
+        kawaii_total, kawaii_loss_dict = self.kawaii_loss(sr_images, hr_images, fake_logits)
+        
+        # 分别记录各个子损失（统一键名）
+        if weights['pixel'] > 0 and 'pixel' in kawaii_loss_dict:
+            loss_components['pixel'] = kawaii_loss_dict['pixel']
             
-        if weights['perceptual'] > 0:
-            loss_components['perceptual'] = kawaii_loss_dict['perceptual_loss'].item()
+        if weights['perceptual'] > 0 and 'perceptual' in kawaii_loss_dict:
+            loss_components['perceptual'] = kawaii_loss_dict['perceptual']
             
-        if weights['frequency'] > 0:
-            loss_components['frequency'] = kawaii_loss_dict['frequency_loss'].item()
+        if weights['frequency'] > 0 and 'frequency' in kawaii_loss_dict:
+            loss_components['frequency'] = kawaii_loss_dict['frequency']
+            
+        if 'vgg' in kawaii_loss_dict:
+            loss_components['vgg'] = kawaii_loss_dict['vgg']
+            
+        if 'adversarial' in kawaii_loss_dict:
+            loss_components['adversarial'] = kawaii_loss_dict['adversarial']
         
         # 根据阶段调整KawaiiLoss权重
         kawaii_weight = weights['pixel'] + weights['perceptual'] + weights['frequency']
@@ -147,7 +152,7 @@ class KawaiiSRTrainer(BaseTrainer):
         if weights['adversarial'] > 0 and stage_config.name != "stage1":
             # 生成器损失
             fake_pred = self.discriminator(sr_images)
-            gen_loss = self.discriminator_loss.generator_loss(fake_pred)
+            gen_loss = self.generator_loss(fake_pred)
             loss_components['adversarial'] = gen_loss.item()
             total_loss += weights['adversarial'] * gen_loss
         
@@ -206,7 +211,7 @@ class KawaiiSRTrainer(BaseTrainer):
         # 计算判别器损失
         real_pred = self.discriminator(real_images)
         fake_pred = self.discriminator(fake_images.detach())
-        disc_loss = self.discriminator_loss.discriminator_loss(real_pred, fake_pred)
+        disc_loss = self.discriminator_loss(real_pred, fake_pred)
         
         # 反向传播
         disc_loss.backward()
@@ -260,9 +265,9 @@ class KawaiiSRTrainer(BaseTrainer):
     ):
         """训练所有三个阶段"""
         stages = [
-            ("stage1", self.config.stage1),
-            ("stage2", self.config.stage2),
-            ("stage3", self.config.stage3)
+            ("stage1", self.config.stages['stage1']),
+            ("stage2", self.config.stages['stage2']),
+            ("stage3", self.config.stages['stage3'])
         ]
         
         start_stage_idx = 0

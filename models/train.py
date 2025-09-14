@@ -30,7 +30,7 @@ import atexit
 # 添加当前目录到Python路径
 sys.path.append(str(Path(__file__).parent))
 
-from KawaiiSR import KawaiiSR
+from KawaiiSR.KawaiiSR import KawaiiSR
 from kawaii_trainer import KawaiiSRTrainer
 from train_config import create_training_config, get_default_model_config
 from checkpoint_manager import CheckpointManager, AutoSaveManager
@@ -95,14 +95,14 @@ class TrainingSession:
         
         # 命令行参数覆盖配置文件
         if self.args.batch_size:
-            config.stage1.batch_size = self.args.batch_size
-            config.stage2.batch_size = self.args.batch_size
-            config.stage3.batch_size = self.args.batch_size
+            config.stages['stage1'].batch_size = self.args.batch_size
+            config.stages['stage2'].batch_size = self.args.batch_size
+            config.stages['stage3'].batch_size = self.args.batch_size
         
         if self.args.learning_rate:
-            config.stage1.learning_rate = self.args.learning_rate
-            config.stage2.learning_rate = self.args.learning_rate * 0.5
-            config.stage3.learning_rate = self.args.learning_rate * 0.25
+            config.stages['stage1'].learning_rate = self.args.learning_rate
+            config.stages['stage2'].learning_rate = self.args.learning_rate * 0.5
+            config.stages['stage3'].learning_rate = self.args.learning_rate * 0.25
         
         return config
     

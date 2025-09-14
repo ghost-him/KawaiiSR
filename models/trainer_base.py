@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
 import numpy as np
 from collections import defaultdict
+import torch.nn.functional as F
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
 from train_config import TrainingConfig, StageConfig
 from data_loader import create_data_loaders
@@ -57,6 +59,10 @@ class BaseTrainer(ABC):
         
         # 移动模型到设备
         self.model.to(self.device)
+        
+        # 初始化评估指标
+        self.psnr = PeakSignalNoiseRatio().to(self.device)
+        self.ssim = StructuralSimilarityIndexMeasure().to(self.device)
         
     def _create_directories(self):
         """创建必要的目录"""
@@ -510,11 +516,12 @@ class BaseTrainer(ABC):
         train_loader, val_loader = create_data_loaders(
             train_data_path=self.config.train_data_path,
             val_data_path=self.config.val_data_path,
-            input_size=stage_config.input_size,
             batch_size=stage_config.batch_size,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            stage=stage_name
+            stage=stage_name,
+            train_csv='dataset_index.csv',
+            val_csv='dataset_index.csv'
         )
         
         # 训练循环
