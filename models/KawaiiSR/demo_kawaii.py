@@ -12,9 +12,9 @@ def demo():
     window_size=16
     scale=2
     model = KawaiiSR(
-        image_size=64,
-        use_tiling= False,
-        tile_size = 128,
+        image_size=128,
+        use_tiling= True,
+        tile_size = 64, # 128 - 2 * tile_pad = 64
         tile_pad= 32,
         hat_window_size=window_size,
         hat_depths=(6, 6, 6, 6, 6, 6),     # 使用较浅的深度以加速
@@ -61,7 +61,7 @@ def demo():
 
     # 4. Demo 3: 验证超高分辨率支持
     print("\n--- Demo 3: 超高分辨率尺寸 (1280x720) ---")
-    h3, w3 = 256, 256
+    h3, w3 = 1280, 720
     
 
     input_image2 = torch.rand(1, 3, h3, w3)
