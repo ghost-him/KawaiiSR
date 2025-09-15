@@ -208,7 +208,8 @@ class CheckpointManager:
         
         try:
             # 加载检查点数据
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            # 使用weights_only=False以兼容PyTorch 2.6+的安全限制
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             
             # 加载模型状态
             if strict:
@@ -338,7 +339,8 @@ class CheckpointManager:
     def get_checkpoint_info(self, checkpoint_path: str) -> Optional[Dict[str, Any]]:
         """获取检查点信息（不加载模型权重）"""
         try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+            # 使用weights_only=False以兼容PyTorch 2.6+的安全限制
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
             
             # 移除大的权重数据，只保留元信息
             info = {
@@ -400,7 +402,8 @@ class CheckpointManager:
         """验证检查点文件的完整性"""
         try:
             # 尝试加载检查点
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+            # 使用weights_only=False以兼容PyTorch 2.6+的安全限制
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
             
             # 检查必要的键
             required_keys = ['model_state_dict', 'epoch', 'global_step', 'stage']

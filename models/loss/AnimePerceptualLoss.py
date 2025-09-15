@@ -26,7 +26,8 @@ class AnimePerceptualLoss(nn.Module):
 
         # b) 加载Danbooru2018数据集的预训练权重
         state_dict_url = "https://github.com/RF5/danbooru-pretrained/releases/download/v0.1/resnet50-13306192.pth"
-        state = torch.hub.load_state_dict_from_url(state_dict_url, progress=True, map_location=self.device)
+        # 使用weights_only=False以兼容PyTorch 2.6+的安全限制
+        state = torch.hub.load_state_dict_from_url(state_dict_url, progress=True, map_location=self.device, weights_only=False)
         
         body_state = {}
         for key, val in state.items():

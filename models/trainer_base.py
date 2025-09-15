@@ -504,7 +504,8 @@ class BaseTrainer(ABC):
         load_scheduler: bool = True
     ) -> Dict[str, Any]:
         """加载检查点"""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # 使用weights_only=False以兼容PyTorch 2.6+的安全限制
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         # 加载模型状态
         self.model.load_state_dict(checkpoint['model_state_dict'])
