@@ -166,27 +166,72 @@ class TrainingSession:
         # 注册退出时的清理函数
         atexit.register(self._cleanup)
     
+    def _is_main_process(self) -> bool:
+        """检查是否为主进程（避免多进程CUDA问题）"""
+        try:
+            import multiprocessing as mp
+            return mp.current_process().name == 'MainProcess'
+        except:
+            return True
+    
     def _emergency_save(self):
-        """紧急保存"""
-        if self.is_training and self.trainer.optimizer:
+        """紧急保存（多进程安全）"""
+        if not self.is_training or not self.trainer.optimizer:
+            return
+            
+        # 检查是否为主进程，避免在fork的子进程中操作CUDA
+        if not self._is_main_process():
+            print("Skipping emergency save in subprocess to avoid CUDA errors")
+            return
+            
+        try:
+            # 确保CUDA同步
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except RuntimeError as e:
+                    print(f"CUDA synchronization failed: {e}")
+            
+            emergency_path = self.checkpoint_manager.save_checkpoint(
+                model=self.model,
+                optimizer=self.trainer.optimizer,
+                scheduler=self.trainer.scheduler,
+                scaler=self.trainer.scaler,
+                epoch=self.trainer.current_epoch,
+                global_step=self.trainer.global_step,
+                stage=self.trainer.current_stage or 'unknown',
+                metrics=self.trainer.best_metrics,
+                config=self.config,
+                additional_info={'emergency_save': True},
+                is_auto_save=True
+            )
+            self.emergency_save_path = emergency_path
+            print(f"Emergency checkpoint saved: {emergency_path}")
+            
+        except Exception as e:
+            print(f"Failed to save emergency checkpoint: {e}")
+            # 尝试保存最基本的模型权重
             try:
-                emergency_path = self.checkpoint_manager.save_checkpoint(
-                    model=self.model,
-                    optimizer=self.trainer.optimizer,
-                    scheduler=self.trainer.scheduler,
-                    scaler=self.trainer.scaler,
-                    epoch=self.trainer.current_epoch,
-                    global_step=self.trainer.global_step,
-                    stage=self.trainer.current_stage or 'unknown',
-                    metrics=self.trainer.best_metrics,
-                    config=self.config,
-                    additional_info={'emergency_save': True},
-                    is_auto_save=True
-                )
-                self.emergency_save_path = emergency_path
-                print(f"Emergency checkpoint saved: {emergency_path}")
-            except Exception as e:
-                print(f"Failed to save emergency checkpoint: {e}")
+                emergency_dir = self.checkpoint_dir / "emergency"
+                emergency_dir.mkdir(exist_ok=True)
+                
+                # 只保存模型权重，避免CUDA相关的状态
+                model_path = emergency_dir / f"emergency_model_{self.trainer.global_step}.pth"
+                
+                # 安全获取模型状态
+                if hasattr(self.model, 'state_dict'):
+                    try:
+                        state_dict = self.model.state_dict()
+                        # 将所有tensor移到CPU
+                        cpu_state_dict = {k: v.cpu() if isinstance(v, torch.Tensor) else v 
+                                        for k, v in state_dict.items()}
+                        torch.save(cpu_state_dict, model_path)
+                        print(f"Emergency model weights saved: {model_path}")
+                    except Exception as model_e:
+                        print(f"Failed to save emergency model weights: {model_e}")
+                        
+            except Exception as fallback_e:
+                print(f"All emergency save attempts failed: {fallback_e}")
     
     def _cleanup(self):
         """清理资源"""

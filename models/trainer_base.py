@@ -14,6 +14,7 @@ import numpy as np
 from collections import defaultdict
 import torch.nn.functional as F
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from tqdm import tqdm
 
 from train_config import TrainingConfig, StageConfig
 from data_loader import create_data_loaders
@@ -192,78 +193,101 @@ class BaseTrainer(ABC):
         epoch_losses = defaultdict(list)
         epoch_metrics = defaultdict(list)
         
-        for batch_idx, (lr_images, hr_images) in enumerate(train_loader):
-            lr_images = lr_images.to(self.device)
-            hr_images = hr_images.to(self.device)
+        # 创建进度条
+        pbar = tqdm(
+            enumerate(train_loader),
+            total=len(train_loader),
+            desc=f"Epoch {epoch+1} Training",
+            leave=False,
+            ncols=100
+        )
+        
+        try:
+            for batch_idx, (lr_images, hr_images) in pbar:
+                lr_images = lr_images.to(self.device)
+                hr_images = hr_images.to(self.device)
 
-            # 训练生成器
-            self.optimizer.zero_grad()
+                # 训练生成器
+                self.optimizer.zero_grad()
 
-            # 前向传播
-            if self.config.mixed_precision:
-                with autocast():
+                # 前向传播
+                if self.config.mixed_precision:
+                    with autocast():
+                        sr_images = self.model(lr_images)
+                        loss, loss_components = self._compute_loss(
+                            sr_images, hr_images, stage_config, epoch
+                        )
+
+                    # 反向传播
+                    self.scaler.scale(loss).backward()
+
+                    # 梯度裁剪
+                    if self.config.gradient_clip_norm > 0:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.config.gradient_clip_norm
+                        )
+                    
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
                     sr_images = self.model(lr_images)
                     loss, loss_components = self._compute_loss(
                         sr_images, hr_images, stage_config, epoch
                     )
-
-                # 反向传播
-                self.scaler.scale(loss).backward()
-
-                # 梯度裁剪
-                if self.config.gradient_clip_norm > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.gradient_clip_norm
+                    
+                    loss.backward()
+                    
+                    # 梯度裁剪
+                    if self.config.gradient_clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.config.gradient_clip_norm
+                        )
+                    
+                    self.optimizer.step()
+                
+                # 训练判别器（如果存在且当前阶段需要）
+                disc_loss_value = 0.0
+                if hasattr(self, '_train_discriminator_step'):
+                    disc_metrics = self._train_discriminator_step(hr_images, sr_images.detach())
+                    if 'discriminator_loss' in disc_metrics:
+                        disc_loss_value = disc_metrics['discriminator_loss']
+                        epoch_losses['discriminator'].append(disc_loss_value)
+                
+                # 记录损失
+                epoch_losses['total'].append(loss.item())
+                for key, value in loss_components.items():
+                    epoch_losses[key].append(value)
+                
+                # 计算指标
+                metrics = self._compute_metrics(sr_images, hr_images)
+                for key, value in metrics.items():
+                    epoch_metrics[key].append(value)
+                
+                # 更新进度条显示
+                pbar.set_postfix({
+                    'Loss': f'{loss.item():.4f}',
+                    'PSNR': f'{metrics.get("psnr", 0):.2f}',
+                    'SSIM': f'{metrics.get("ssim", 0):.4f}',
+                    'LR': f'{self.optimizer.param_groups[0]["lr"]:.2e}'
+                })
+                
+                # 记录到TensorBoard (移除了每隔一定轮数的控制台输出)
+                if batch_idx % self.config.log_frequency == 0:
+                    self._log_batch_metrics_tensorboard_only(
+                        epoch, batch_idx, len(train_loader),
+                        loss.item(), loss_components, metrics,
+                        disc_loss_value if disc_loss_value > 0 else None
                     )
                 
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                sr_images = self.model(lr_images)
-                loss, loss_components = self._compute_loss(
-                    sr_images, hr_images, stage_config, epoch
-                )
+                self.global_step += 1
                 
-                loss.backward()
-                
-                # 梯度裁剪
-                if self.config.gradient_clip_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.gradient_clip_norm
-                    )
-                
-                self.optimizer.step()
-            
-            # 训练判别器（如果存在且当前阶段需要）
-            disc_loss_value = 0.0
-            if hasattr(self, '_train_discriminator_step'):
-                disc_metrics = self._train_discriminator_step(hr_images, sr_images.detach())
-                if 'discriminator_loss' in disc_metrics:
-                    disc_loss_value = disc_metrics['discriminator_loss']
-                    epoch_losses['discriminator'].append(disc_loss_value)
-            
-            # 记录损失
-            epoch_losses['total'].append(loss.item())
-            for key, value in loss_components.items():
-                epoch_losses[key].append(value)
-            
-            # 计算指标
-            metrics = self._compute_metrics(sr_images, hr_images)
-            for key, value in metrics.items():
-                epoch_metrics[key].append(value)
-            
-            # 记录到TensorBoard
-            if batch_idx % self.config.log_frequency == 0:
-                self._log_batch_metrics(
-                    epoch, batch_idx, len(train_loader),
-                    loss.item(), loss_components, metrics,
-                    disc_loss_value if disc_loss_value > 0 else None
-                )
-            
-            self.global_step += 1
+        except KeyboardInterrupt:
+            print(f"\n训练在 epoch {epoch}, batch {batch_idx} 被中断")
+            # 重新抛出异常让上层处理
+            raise
         
         # 计算epoch平均值
         avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
@@ -282,8 +306,16 @@ class BaseTrainer(ABC):
         epoch_losses = defaultdict(list)
         epoch_metrics = defaultdict(list)
         
+        # 创建验证进度条
+        pbar = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch+1} [{stage_config.name}] Validation",
+            leave=False,
+            ncols=100
+        )
+        
         with torch.no_grad():
-            for lr_images, hr_images in val_loader:
+            for lr_images, hr_images in pbar:
                 lr_images = lr_images.to(self.device)
                 hr_images = hr_images.to(self.device)
                 
@@ -309,12 +341,40 @@ class BaseTrainer(ABC):
                 metrics = self._compute_metrics(sr_images, hr_images)
                 for key, value in metrics.items():
                     epoch_metrics[key].append(value)
+                
+                # 更新验证进度条显示
+                pbar.set_postfix({
+                    'Val_Loss': f'{loss.item():.4f}',
+                    'Val_PSNR': f'{metrics.get("psnr", 0):.2f}',
+                    'Val_SSIM': f'{metrics.get("ssim", 0):.4f}'
+                })
         
         # 计算epoch平均值
         avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
         avg_metrics = {key: np.mean(values) for key, values in epoch_metrics.items()}
         
         return {**avg_losses, **avg_metrics}
+    
+    def _log_batch_metrics_tensorboard_only(
+        self,
+        epoch: int,
+        batch_idx: int,
+        total_batches: int,
+        loss: float,
+        loss_components: Dict[str, float],
+        metrics: Dict[str, float],
+        disc_loss: Optional[float] = None
+    ):
+        """只记录TensorBoard指标，不输出到控制台"""
+        # TensorBoard记录
+        if self.writer:
+            self.writer.add_scalar('Train/GeneratorLoss', loss, self.global_step)
+            if disc_loss is not None:
+                self.writer.add_scalar('Train/DiscriminatorLoss', disc_loss, self.global_step)
+            for key, value in loss_components.items():
+                self.writer.add_scalar(f'Train/Loss_{key}', value, self.global_step)
+            for key, value in metrics.items():
+                self.writer.add_scalar(f'Train/{key.upper()}', value, self.global_step)
     
     def _log_batch_metrics(
         self,
@@ -326,21 +386,11 @@ class BaseTrainer(ABC):
         metrics: Dict[str, float],
         disc_loss: Optional[float] = None
     ):
-        """记录批次指标"""
-        # 控制台输出
-        disc_info = f", Disc Loss: {disc_loss:.4f}" if disc_loss is not None else ""
-        print(f"Epoch {epoch}, Batch {batch_idx}/{total_batches}, "
-              f"Gen Loss: {loss:.4f}{disc_info}, PSNR: {metrics.get('psnr', 0):.2f}")
-        
-        # TensorBoard记录
-        if self.writer:
-            self.writer.add_scalar('Train/GeneratorLoss', loss, self.global_step)
-            if disc_loss is not None:
-                self.writer.add_scalar('Train/DiscriminatorLoss', disc_loss, self.global_step)
-            for key, value in loss_components.items():
-                self.writer.add_scalar(f'Train/Loss_{key}', value, self.global_step)
-            for key, value in metrics.items():
-                self.writer.add_scalar(f'Train/{key.upper()}', value, self.global_step)
+        """记录批次指标（保留原方法以防其他地方调用）"""
+        # 控制台输出已被移除，只保留TensorBoard记录
+        self._log_batch_metrics_tensorboard_only(
+            epoch, batch_idx, total_batches, loss, loss_components, metrics, disc_loss
+        )
     
     def _log_epoch_metrics(
         self,
@@ -525,35 +575,108 @@ class BaseTrainer(ABC):
         )
         
         # 训练循环
-        for epoch in range(start_epoch, stage_config.epochs):
-            self.current_epoch = epoch
-            
-            # 训练
-            train_metrics = self._train_epoch(train_loader, stage_config, epoch)
-            
-            # 验证
-            if epoch % self.config.val_frequency == 0:
-                val_metrics = self._validate_epoch(val_loader, stage_config, epoch)
-                
-                # 记录指标
-                self._log_epoch_metrics(epoch, train_metrics, val_metrics)
-                
-                # 保存检查点
-                if epoch % self.config.save_frequency == 0:
-                    is_best = val_metrics.get('psnr', 0) > self.best_metrics.get('psnr', 0)
-                    self.save_checkpoint(epoch, stage_name, is_best)
-                
-                # 早停检查
-                if self._should_early_stop(val_metrics):
-                    print(f"Early stopping at epoch {epoch}")
-                    break
-            
-            # 更新学习率
-            if self.scheduler:
-                self.scheduler.step()
+        epoch_pbar = tqdm(
+            range(start_epoch, stage_config.epochs),
+            desc=f"Stage {stage_name} Progress",
+            position=0,
+            leave=True
+        )
         
-        # 保存最终检查点
-        self.save_checkpoint(self.current_epoch, stage_name, is_best=True)
+        try:
+            for epoch in epoch_pbar:
+                self.current_epoch = epoch
+                
+                # 训练
+                train_metrics = self._train_epoch(train_loader, stage_config, epoch)
+                
+                # 验证
+                if epoch % self.config.val_frequency == 0:
+                    val_metrics = self._validate_epoch(val_loader, stage_config, epoch)
+                    
+                    # 记录指标
+                    self._log_epoch_metrics(epoch, train_metrics, val_metrics)
+                    
+                    # 优化的保存策略：每个epoch中间保存一次
+                    # 只在epoch的一半时保存常规检查点，最后保存最佳检查点
+                    should_save_checkpoint = False
+                    is_best = False
+                    
+                    # 检查是否是最佳模型
+                    current_psnr = val_metrics.get('psnr', 0)
+                    if current_psnr > self.best_metrics.get('psnr', 0):
+                        self.best_metrics['psnr'] = current_psnr
+                        is_best = True
+                        should_save_checkpoint = True
+                    
+                    # 每个epoch的中间点保存一次（不是最佳模型时）
+                    if epoch > 0 and epoch % max(1, stage_config.epochs // 2) == 0 and not is_best:
+                        should_save_checkpoint = True
+                    
+                    # 每10个epoch强制保存一次（防止丢失）
+                    if epoch % 10 == 0:
+                        should_save_checkpoint = True
+                    
+                    if should_save_checkpoint:
+                        self.save_checkpoint(epoch, stage_name, is_best)
+                    
+                    # 更新epoch进度条显示
+                    epoch_pbar.set_postfix({
+                        'Train_Loss': f'{train_metrics.get("total", 0):.4f}',
+                        'Val_PSNR': f'{val_metrics.get("psnr", 0):.2f}',
+                        'Best_PSNR': f'{self.best_metrics.get("psnr", 0):.2f}',
+                        'LR': f'{self.optimizer.param_groups[0]["lr"]:.2e}'
+                    })
+                    
+                    # 早停检查
+                    if self._should_early_stop(val_metrics):
+                        print(f"Early stopping at epoch {epoch}")
+                        break
+                
+                # 更新学习率
+                if self.scheduler:
+                    self.scheduler.step()
+            
+            # 保存最终检查点
+            self.save_checkpoint(self.current_epoch, stage_name, is_best=True)
+            
+        except KeyboardInterrupt:
+            print(f"\n训练被用户中断 (Ctrl+C)")
+            print(f"正在安全保存当前进度...")
+            
+            # 安全保存当前状态
+            try:
+                # 确保CUDA同步
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                
+                # 保存中断时的检查点
+                self.save_checkpoint(
+                    self.current_epoch, 
+                    stage_name, 
+                    is_best=False,
+                    additional_info={'interrupted': True, 'interrupt_time': time.time()}
+                )
+                print(f"检查点已安全保存到 epoch {self.current_epoch}")
+                
+            except Exception as save_error:
+                print(f"保存检查点时出错: {save_error}")
+                print("尝试紧急保存...")
+                
+                # 紧急保存策略：只保存模型权重
+                try:
+                    emergency_path = self.checkpoint_dir / f"emergency_save_{stage_name}_epoch_{self.current_epoch}.pth"
+                    torch.save({
+                        'model_state_dict': {k: v.cpu() for k, v in self.model.state_dict().items()},
+                        'epoch': self.current_epoch,
+                        'stage': stage_name,
+                        'emergency_save': True
+                    }, emergency_path)
+                    print(f"紧急保存完成: {emergency_path}")
+                except Exception as emergency_error:
+                    print(f"紧急保存也失败了: {emergency_error}")
+            
+            # 重新抛出异常以正确退出
+            raise
         
         if self.writer:
             self.writer.close()

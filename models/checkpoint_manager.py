@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import logging
 from dataclasses import asdict
+import multiprocessing as mp
 
 from train_config import TrainingConfig
 
@@ -34,16 +35,22 @@ class CheckpointManager:
     
     def _setup_logging(self):
         """设置日志记录"""
-        log_file = self.checkpoint_dir / 'checkpoint.log'
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler()
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('checkpoint_manager')
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
+    
+    def _is_main_process(self) -> bool:
+        """检查是否为主进程（避免多进程CUDA问题）"""
+        try:
+            return mp.current_process().name == 'MainProcess'
+        except:
+            return True
     
     def _load_checkpoint_history(self) -> List[Dict[str, Any]]:
         """加载检查点历史记录"""
@@ -80,23 +87,60 @@ class CheckpointManager:
         is_best: bool = False,
         is_auto_save: bool = False
     ) -> str:
-        """保存检查点"""
+        """保存检查点（多进程安全）"""
+        # 检查是否为主进程，避免在fork的子进程中操作CUDA
+        if not self._is_main_process():
+            self.logger.warning("Skipping checkpoint save in subprocess to avoid CUDA errors")
+            raise RuntimeError("Cannot save checkpoint in subprocess due to CUDA limitations")
         
-        # 创建检查点数据
-        checkpoint_data = {
-            'epoch': epoch,
-            'global_step': global_step,
-            'stage': stage,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-            'scaler_state_dict': scaler.state_dict() if scaler else None,
-            'metrics': metrics,
-            'config': asdict(config),
-            'timestamp': datetime.now().isoformat(),
-            'pytorch_version': torch.__version__,
-            'cuda_version': torch.version.cuda if torch.cuda.is_available() else None
-        }
+        try:
+            # 确保CUDA同步，避免异步错误
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            
+            # 安全获取模型状态字典
+            try:
+                model_state_dict = model.state_dict()
+                # 将模型参数移到CPU以避免CUDA问题
+                model_state_dict = {k: v.cpu() if isinstance(v, torch.Tensor) else v 
+                                  for k, v in model_state_dict.items()}
+            except RuntimeError as e:
+                self.logger.warning(f"Failed to get model state dict with CUDA, trying CPU: {e}")
+                # 如果CUDA有问题，尝试将模型移到CPU再获取状态
+                model_cpu = model.cpu()
+                model_state_dict = model_cpu.state_dict()
+                # 将模型移回原设备
+                if torch.cuda.is_available():
+                    try:
+                        model.cuda()
+                    except:
+                        self.logger.warning("Failed to move model back to CUDA")
+            
+            # 安全获取优化器状态字典
+            try:
+                optimizer_state_dict = optimizer.state_dict()
+            except RuntimeError as e:
+                self.logger.warning(f"Failed to get optimizer state dict: {e}")
+                optimizer_state_dict = None
+            
+            # 创建检查点数据
+            checkpoint_data = {
+                'epoch': epoch,
+                'global_step': global_step,
+                'stage': stage,
+                'model_state_dict': model_state_dict,
+                'optimizer_state_dict': optimizer_state_dict,
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                'scaler_state_dict': scaler.state_dict() if scaler else None,
+                'metrics': metrics,
+                'config': asdict(config),
+                'timestamp': datetime.now().isoformat(),
+                'pytorch_version': torch.__version__,
+                'cuda_version': torch.version.cuda if torch.cuda.is_available() else None
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to prepare checkpoint data: {e}")
+            raise
         
         if additional_info:
             checkpoint_data.update(additional_info)
