@@ -12,16 +12,14 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 
 
 class SRDataset(Dataset):
-    """超分辨率数据集，基于CSV索引文件加载预处理的数据"""
-    
+    """超分辨率数据集，基于CSV索引文件加载预处理的数据（已移除阶段参数）"""
+
     def __init__(
         self,
         data_path: str,
-        csv_file: str = 'dataset_index.csv',
-        stage: str = 'stage1'
+        csv_file: str = 'dataset_index.csv'
     ):
         self.data_path = Path(data_path)
-        self.stage = stage
         
         # 读取CSV索引文件
         csv_path = self.data_path / csv_file
@@ -30,7 +28,6 @@ class SRDataset(Dataset):
         
         self.data_index = pd.read_csv(csv_path)
         print(f"从CSV文件加载数据集: {len(self.data_index)} 对图像")
-        print(f"训练阶段: {stage}")
         
         # 验证文件存在性
         self._validate_files()
@@ -39,9 +36,6 @@ class SRDataset(Dataset):
         self.to_tensor = transforms.ToTensor()
         self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
-        # 评估指标（在使用时再移动到正确的设备）
-        self.psnr = PeakSignalNoiseRatio(data_range=1.0)
-        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
     def _validate_files(self):
         """验证CSV中列出的文件是否存在"""
         missing_files = []
@@ -116,24 +110,15 @@ def create_data_loaders(
     batch_size: int,
     num_workers: int = 4,
     pin_memory: bool = True,
-    stage: str = 'stage1',
-    train_csv: str = 'train_index.csv',
-    val_csv: str = 'val_index.csv'
+    train_csv: str = 'dataset_index.csv',
+    val_csv: str = 'dataset_index.csv'
 ) -> Tuple[DataLoader, DataLoader]:
-    """创建训练和验证数据加载器"""
+    """创建训练和验证数据加载器（已移除阶段参数）"""
     
     # 创建数据集
-    train_dataset = SRDataset(
-        data_path=train_data_path,
-        csv_file=train_csv,
-        stage=stage
-    )
+    train_dataset = SRDataset(data_path=train_data_path, csv_file=train_csv)
     
-    val_dataset = SRDataset(
-        data_path=val_data_path,
-        csv_file=val_csv,
-        stage=stage
-    )
+    val_dataset = SRDataset(data_path=val_data_path, csv_file=val_csv)
     
     # 创建数据加载器
     train_loader = DataLoader(
@@ -162,8 +147,7 @@ if __name__ == '__main__':
     try:
         dataset = SRDataset(
             data_path='./data/train',
-            csv_file='train_index.csv',
-            stage='stage1'
+            csv_file='dataset_index.csv'
         )
         
         dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=2)

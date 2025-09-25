@@ -1,0 +1,29 @@
+# Quick validation config: 5 epochs, small batch, CPU/GPU auto
+train:
+  device: cuda # 若无GPU会在代码中回退到CPU
+  epochs: 5
+  batch_size: 1
+  learning_rate: 1.0e-4
+  mixed_precision: false
+  gradient_clip_norm: 1.0
+  num_workers: 8
+  pin_memory: true
+  val_every: 1
+  log_every: 20
+  early_stopping_patience: 100 # 短跑验证，基本不触发早停
+  tensorboard_dir: ./models/logs/quick
+  checkpoint_dir: ./models/checkpoints/quick
+
+# 固定损失权重（不随阶段变化）
+loss_weights:
+  pixel: 1.0
+  perceptual: 0.0
+  frequency: 0.0
+  vgg: 0.0
+  adversarial: 0.0 # 关闭GAN以快速验证
+
+# GAN相关（快速验证关闭）
+gan:
+  enabled: false
+  discriminator_lr: 1.0e-4
+  disc_update_ratio: 1
