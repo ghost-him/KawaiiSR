@@ -1,0 +1,30 @@
+train:
+	device: cuda
+	epochs: 5
+	batch_size: 12
+	learning_rate: 1.5e-4
+	mixed_precision: true
+	gradient_clip_norm: 1.0
+	num_workers: 8
+	pin_memory: true
+	val_every: 1
+	log_every: 100
+	early_stopping_patience: 12
+	tensorboard_dir: ./models/logs/real_stage2
+	checkpoint_dir: ./models/checkpoints/real_stage2
+
+loss_weights:
+	pixel: 0.8
+	frequency: 0.2
+	perceptual: 0.0
+	vgg: 0.1          # 使用VGG感知增强纹理
+	adversarial: 0.0
+
+loss_options:
+	enable_anime_loss: false
+
+gan:
+	enabled: false
+	discriminator_lr: 1.0e-4
+	disc_update_ratio: 1
+

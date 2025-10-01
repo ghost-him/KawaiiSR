@@ -32,9 +32,8 @@ class SRDataset(Dataset):
         # 验证文件存在性
         self._validate_files()
         
-        # 定义变换（仅标准化，无数据增强）
+        # 定义变换（统一到 [0,1]，不做额外归一化）
         self.to_tensor = transforms.ToTensor()
-        self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
     def _validate_files(self):
         """验证CSV中列出的文件是否存在"""
@@ -73,15 +72,13 @@ class SRDataset(Dataset):
         """加载图像并转换为tensor"""
         try:
             image = Image.open(path).convert('RGB')
-            tensor = self.to_tensor(image)
-            tensor = self.normalize(tensor)
+            tensor = self.to_tensor(image)  # [0,1]
             return tensor
         except Exception as e:
             print(f"Error loading image {path}: {e}")
             # 返回一个默认tensor
             default_image = Image.new('RGB', (256, 256), color=(128, 128, 128))
-            tensor = self.to_tensor(default_image)
-            tensor = self.normalize(tensor)
+            tensor = self.to_tensor(default_image)  # [0,1]
             return tensor
     
     def __len__(self) -> int:
@@ -100,9 +97,8 @@ class SRDataset(Dataset):
         return lr_tensor, hr_tensor
 
     def _setup_transforms(self):
-        """设置数据变换（仅标准化，无增强）"""
+        """设置数据变换（统一到 [0,1]，不做额外归一化）"""
         self.to_tensor = transforms.ToTensor()
-        self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
 def create_data_loaders(
     train_data_path: str,

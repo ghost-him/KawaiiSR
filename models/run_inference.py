@@ -63,26 +63,15 @@ def list_images(path: Path, exts: Tuple[str, ...]) -> List[Path]:
 
 
 def build_transforms():
-    # 与 data_loader 内保持一致: ToTensor + Normalize(0.5,0.5)
+    # 与 data_loader 内保持一致: 仅 ToTensor，输出 [0,1]
     return transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
 
 def tensor_to_image(t: torch.Tensor) -> Image.Image:
-    """将模型输出张量转换为 PIL.Image
-
-    训练中指标函数假设模型输出在 [-1,1]，因此这里首先尝试按该区间反归一化；
-    若检测到范围已经在 [0,1]（min>=-0.01 且 max<=1.01），则直接使用。
-    """
-    t = t.detach().cpu()
-    mn = float(t.min())
-    mx = float(t.max())
-    if mn < -0.05 or mx > 1.05:  # 视为 [-1,1]
-        t = (t * 0.5 + 0.5).clamp(0, 1)
-    else:
-        t = t.clamp(0, 1)
+    """将模型输出张量转换为 PIL.Image，假设输入在 [0,1]"""
+    t = t.detach().cpu().clamp(0, 1)
     t = (t * 255.0 + 0.5).byte()
     return transforms.ToPILImage()(t)
 

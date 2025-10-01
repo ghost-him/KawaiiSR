@@ -65,10 +65,12 @@ class KawaiiLoss(nn.Module):
         
         # 实例化损失函数
         self.vgg_loss = VGGPerceptualLoss(
-            layer_weights, 
-            vgg_type, 
-            perceptual_weight=1.0, 
-            device=device
+            layer_weights,
+            vgg_type,
+            use_input_norm=True,
+            range_norm=False,
+            perceptual_weight=1.0,
+            device=device,
         )
 
     def forward(self, sr_img: torch.Tensor, hr_img: torch.Tensor, fake_logits: torch.Tensor):

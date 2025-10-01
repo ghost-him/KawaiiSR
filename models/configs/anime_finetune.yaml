@@ -1,0 +1,36 @@
+train:
+  device: cuda
+  epochs: 3
+  batch_size: 8
+  learning_rate: 5.0e-5
+  mixed_precision: true
+  gradient_clip_norm: 0.5
+  num_workers: 8
+  pin_memory: true
+  val_every: 1
+  log_every: 100
+  early_stopping_patience: 10
+  tensorboard_dir: ./models/logs/anime_ft
+  checkpoint_dir: ./models/checkpoints/anime_ft
+
+# 对动漫域，开启 AnimePerceptualLoss，并适度保留像素/频域与VGG
+loss_weights:
+  pixel: 0.4
+  frequency: 0.1
+  perceptual: 0.3   # 仅当 enable_anime_loss=true 时生效
+  vgg: 0.05
+  adversarial: 0.002
+
+loss_options:
+  enable_anime_loss: true
+
+gan:
+  enabled: true
+  discriminator_lr: 1.0e-4
+  disc_update_ratio: 1
+
+# 可按需覆盖模型结构（示例保留默认）
+# model_config:
+#   use_tiling: false
+#   tile_size: 256
+#   tile_pad: 16

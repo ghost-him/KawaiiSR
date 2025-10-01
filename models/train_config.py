@@ -45,6 +45,11 @@ class TrainingConfig:
         'adversarial': 0.0,
     })
 
+    # 额外损失/开关项
+    loss_options: Dict[str, Any] = field(default_factory=lambda: {
+        'enable_anime_loss': False
+    })
+
     # GAN 配置（可选，默认关闭）
     gan: Dict[str, Any] = field(default_factory=lambda: {
         'enabled': False,
@@ -89,7 +94,7 @@ def create_training_config(
     yaml_path: Optional[str] = None
 ) -> TrainingConfig:
     """创建扁平训练配置，支持从 YAML 加载并与默认值合并"""
-    base = {
+    base: Dict[str, Any] = {
         'model_config': get_default_model_config(),
         'train_data_path': train_data_path,
         'val_data_path': val_data_path,
@@ -101,13 +106,34 @@ def create_training_config(
         with open(yaml_path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f) or {}
         train_cfg = data.get('train', {})
+        model_overrides = data.get('model_config', {}) or data.get('model', {}) or {}
         loss_weights = data.get('loss_weights', {})
+        loss_options = data.get('loss_options', {})
         gan_cfg = data.get('gan', {})
 
         # 合并到 base
         base.update(train_cfg)
-        base['loss_weights'] = {**TrainingConfig.__dataclass_fields__['loss_weights'].default_factory(), **loss_weights}
-        base['gan'] = {**TrainingConfig.__dataclass_fields__['gan'].default_factory(), **gan_cfg}
+    # 覆盖模型配置
+    base_model_cfg = get_default_model_config()
+    base_model_cfg.update(model_overrides)
+    base['model_config'] = base_model_cfg
+    # 调用 default_factory 需要实例化一个临时 TrainingConfig 或直接重新创建默认字典
+    default_loss_weights = {
+        'pixel': 1.0,
+        'perceptual': 0.1,
+        'frequency': 0.0,
+        'vgg': 0.0,
+        'adversarial': 0.0,
+    }
+    default_loss_options = {'enable_anime_loss': False}
+    default_gan = {
+        'enabled': False,
+        'discriminator_lr': 1e-4,
+        'disc_update_ratio': 1,
+    }
+    base['loss_weights'] = {**default_loss_weights, **(loss_weights if yaml_path else {})}
+    base['loss_options'] = {**default_loss_options, **(loss_options if yaml_path else {})}
+    base['gan'] = {**default_gan, **(gan_cfg if yaml_path else {})}
 
     return TrainingConfig(**base)
 

@@ -215,10 +215,7 @@ class KawaiiSR(nn.Module):
         self.use_tiling = use_tiling
         self.tile_size = tile_size
         self.tile_pad = tile_pad
-        # 这里直接使用0.5 ，因为要应对不同的数据集与实际的情况
-        rgb_mean = (0.5, 0.5, 0.5)
-        self.img_range = image_range
-        self.register_buffer("mean", torch.tensor(rgb_mean).view(1, 3, 1, 1))
+    # 整个训练/推理流程统一使用 [0,1] 输入输出；此处不做额外均值归一化
         self.window_size = hat_window_size
         self.in_channels = in_channels
         self.hat_model = HAT(
@@ -254,18 +251,9 @@ class KawaiiSR(nn.Module):
         pad_w = (self.window_size - width % self.window_size) % self.window_size
         return pad_h, pad_w
 
-    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
-        mean = self.mean.to(dtype=x.dtype, device=x.device)
-        return (x - mean) * self.img_range
-
-    def _denormalize(self, x: torch.Tensor) -> torch.Tensor:
-        mean = self.mean.to(dtype=x.dtype, device=x.device)
-        return x / self.img_range + mean
-
     def forward_hat_block(self, x: torch.Tensor) -> torch.Tensor:
-        """仅执行 HAT 主干，用于固定尺寸导出 ONNX"""
-        x_norm = self._normalize(x)
-        return self.hat_model(x_norm)
+        """仅执行 HAT 主干，用于固定尺寸导出 ONNX。假设输入 x ∈ [0,1]。"""
+        return self.hat_model(x)
 
     def forward_tail_block(self, hat_x: torch.Tensor, bicubic_x: torch.Tensor) -> torch.Tensor:
         """执行尾部融合模块，输入应当与主干输出保持同一归一化空间"""
@@ -276,11 +264,10 @@ class KawaiiSR(nn.Module):
         if scale is None:
             scale = self.scale
         target_size = (x.shape[2] * scale, x.shape[3] * scale)
-        x_norm = self._normalize(x)
-        return F.interpolate(x_norm, size=target_size, mode='bicubic', align_corners=False)
+        return F.interpolate(x, size=target_size, mode='bicubic', align_corners=False)
 
     def _forward_hat_tiled(self, x):
-        """对HAT模块进行分块前向传播"""
+        """对HAT模块进行分块前向传播。假设输入 x ∈ [0,1]，不做额外归一化。"""
         b, c, h, w = x.shape
         output_h = h * self.scale
         output_w = w * self.scale
@@ -350,8 +337,8 @@ class KawaiiSR(nn.Module):
         
         Hp, Wp = x_padded.shape[2:]
 
-        # 2. 归一化
-        x_norm = self._normalize(x_padded)
+        # 2. 使用 DataLoader 的归一化（[0,1]），模型内部不再重复归一化
+        x_norm = x_padded
 
         # 3. HAT模块处理（核心修改部分）
         # 如果启用分块，并且图像尺寸大于分块尺寸，则调用分块处理函数
@@ -368,8 +355,8 @@ class KawaiiSR(nn.Module):
         # 5. 融合与尾部精炼
         x_out = self.tail(hat_x, bicubic_x)
 
-        # 6. 反归一化
-        x_final = self._denormalize(x_out)
+        # 6. 不再反归一化，保持与 DataLoader 一致的张量域（[0,1]）
+        x_final = x_out
 
         # 7. 后处理：裁剪掉之前添加的padding
         if pad_h > 0 or pad_w > 0:

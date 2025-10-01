@@ -43,7 +43,9 @@ class KawaiiTrainer:
             lambda_char=self.cfg.loss_weights.get('pixel', 1.0),
             lambda_lap=self.cfg.loss_weights.get('frequency', 0.0),
             lambda_perc=self.cfg.loss_weights.get('perceptual', 0.0),
+            lambda_adv=self.cfg.loss_weights.get('adversarial', 0.0),
             lambda_vgg=self.cfg.loss_weights.get('vgg', 0.0),
+            enable_anime_loss=bool(self.cfg.loss_options.get('enable_anime_loss', False)),
             device=str(self.device)
         )
 
@@ -103,8 +105,9 @@ class KawaiiTrainer:
             print(message)
 
     def _compute_metrics(self, sr: torch.Tensor, hr: torch.Tensor) -> Dict[str, float]:
-        sr01 = ((sr + 1) / 2).clamp_(0.0, 1.0)
-        hr01 = ((hr + 1) / 2).clamp_(0.0, 1.0)
+        # 输入/输出均已在 [0,1]
+        sr01 = sr.clamp(0.0, 1.0)
+        hr01 = hr.clamp(0.0, 1.0)
         mse = F.mse_loss(sr01, hr01)
         return {
             'psnr': self.psnr(sr01, hr01).item(),
@@ -228,6 +231,13 @@ class KawaiiTrainer:
 
                 # 生成器更新
                 self.opt.zero_grad(set_to_none=True)
+                # 冻结判别器参数，避免在G步对D累积梯度
+                disc_prev_requires_grad = []
+                if self.disc is not None:
+                    for p in self.disc.parameters():
+                        disc_prev_requires_grad.append(p.requires_grad)
+                        p.requires_grad = False
+
                 if self.cfg.mixed_precision:
                     with autocast():
                         sr_img = self.model(lr_img)
@@ -245,6 +255,11 @@ class KawaiiTrainer:
                     if self.cfg.gradient_clip_norm and self.cfg.gradient_clip_norm > 0:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.gradient_clip_norm)
                     self.opt.step()
+
+                # 恢复判别器参数的 requires_grad 标志
+                if self.disc is not None and disc_prev_requires_grad:
+                    for p, flag in zip(self.disc.parameters(), disc_prev_requires_grad):
+                        p.requires_grad = flag
 
                 # 指标
                 metrics = self._compute_metrics(sr_img.detach(), hr_img)
