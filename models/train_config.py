@@ -55,7 +55,7 @@ class TrainingConfig:
 def get_default_model_config() -> Dict[str, Any]:
     """获取默认的模型配置"""
     return {
-        'image_size': 128,
+        'image_size': 64,
         'in_channels': 3,
         'image_range': 1.0,
         'use_tiling': False,
@@ -64,8 +64,8 @@ def get_default_model_config() -> Dict[str, Any]:
         'hat_patch_size': 1,
         'hat_body_hid_channels': 180,
         'hat_upsampler_hid_channels': 64,
-        'hat_depths': (6, 6, 6, 6, 6, 6, 6, 6),
-        'hat_num_heads': (6, 6, 6, 6, 6, 6, 6, 6),
+        'hat_depths': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
+        'hat_num_heads': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
         'hat_window_size': 16,
         'hat_compress_ratio': 3,
         'hat_squeeze_factor': 30,

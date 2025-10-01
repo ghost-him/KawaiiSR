@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import pywt
 from .HAT import HAT, CAB, BigConv
 import math
+from typing import Optional
 
 class WaveletTransform2D(nn.Module):
     """
@@ -26,7 +27,7 @@ class WaveletTransform2D(nn.Module):
 
     def __init__(self, inverse=False, wavelet="haar", dtype=torch.float32):
         super(WaveletTransform2D, self).__init__()
-        
+
         wavelet = pywt.Wavelet(wavelet)
 
         if isinstance(wavelet, tuple):
@@ -43,9 +44,9 @@ class WaveletTransform2D(nn.Module):
             # Inverse DWT filters
             lo = torch.tensor(rec_lo, dtype=dtype).unsqueeze(0)
             hi = torch.tensor(rec_hi, dtype=dtype).unsqueeze(0)
-        
+
         self.build_filters(lo, hi)
-        
+
         # Calculate padding to behave like a standard strided convolution
         # P = (KernelSize - Stride) / 2 for 'same' output, but for stride=2,
         # we need P = (KernelSize - 2) / 2 to halve the dimension.
@@ -74,33 +75,35 @@ class WaveletTransform2D(nn.Module):
     def forward(self, data, original_size=None):
         if self.inverse is False:
             b, c, h, w = data.shape
-            dec_res = []
-            # We apply padding directly in the conv2d function
-            for f in self.filters:
-                dec_res.append(
-                    F.conv2d(
-                        data, f.repeat(c, 1, 1, 1), 
-                        stride=2, 
-                        groups=c,
-                        padding=self.padding # Use calculated padding
-                    )
-                )
-            return dec_res
+            filters = self.filters.to(dtype=data.dtype, device=data.device).repeat(c, 1, 1, 1)
+            dec_res = F.conv2d(
+                data,
+                filters,
+                stride=2,
+                groups=c,
+                padding=self.padding,
+            )
+            dec_res = dec_res.view(b, 4, c, dec_res.shape[-2], dec_res.shape[-1])
+            LL, LH, HL, HH = dec_res.unbind(dim=1)
+            return LL, LH, HL, HH
         else:
             # Inverse transform
-            b, c, h, w = data[0].shape
-            data = torch.stack(data, dim=2).reshape(b, -1, h, w)
+            LL, LH, HL, HH = data
+            b, c, h, w = LL.shape
+            coeffs = torch.stack((LL, LH, HL, HH), dim=1).view(b, -1, h, w)
+            filters = self.filters.to(dtype=coeffs.dtype, device=coeffs.device).repeat(c, 1, 1, 1)
             rec_res = F.conv_transpose2d(
-                data, self.filters.repeat(c, 1, 1, 1), 
-                stride=2, 
+                coeffs,
+                filters,
+                stride=2,
                 groups=c,
-                padding=self.padding # Use calculated padding
+                padding=self.padding,
             )
-            
+
             if original_size is not None:
                 _, _, H, W = original_size
                 rec_res = rec_res[..., :H, :W]
-            
+
             return rec_res
 
 
@@ -163,6 +166,21 @@ class ResidualBlock(nn.Module):
         return out_x
 
 
+class TailRefiner(nn.Module):
+    """融合 HAT 输出与基础上采样结果的尾部模块，方便单独导出 ONNX"""
+
+    def __init__(self, in_channels: int, num_layers: int):
+        super(TailRefiner, self).__init__()
+        self.fusion_conv = BigConv(in_channels=in_channels * 2, out_channels=in_channels)
+        self.residual_block = ResidualBlock(num_layers=num_layers, in_channels=in_channels, out_channels=in_channels)
+
+    def forward(self, hat_x: torch.Tensor, bicubic_x: torch.Tensor) -> torch.Tensor:
+        gate_features = torch.cat([hat_x, bicubic_x], dim=1)
+        x_out = self.fusion_conv(gate_features)
+        x_out = self.residual_block(x_out)
+        return x_out
+
+
 class KawaiiSR(nn.Module):
     def __init__(self, 
                  image_size=64,
@@ -190,6 +208,7 @@ class KawaiiSR(nn.Module):
                  hat_patch_norm=True,
                  hat_use_checkpoint=False,
                  hat_resi_connection='1conv',
+                 tail_num_layers=4,
                  ):
         super(KawaiiSR, self).__init__()
         self.scale = 2 # 硬编码！
@@ -199,7 +218,7 @@ class KawaiiSR(nn.Module):
         # 这里直接使用0.5 ，因为要应对不同的数据集与实际的情况
         rgb_mean = (0.5, 0.5, 0.5)
         self.img_range = image_range
-        self.mean = torch.Tensor(rgb_mean).view(1, 3, 1, 1)
+        self.register_buffer("mean", torch.tensor(rgb_mean).view(1, 3, 1, 1))
         self.window_size = hat_window_size
         self.in_channels = in_channels
         self.hat_model = HAT(
@@ -227,15 +246,38 @@ class KawaiiSR(nn.Module):
             resi_connection=hat_resi_connection,
         )
 
-        self.fusion_conv = BigConv(in_channels=in_channels * 2, out_channels=in_channels)
-
-        self.residual_block = ResidualBlock(num_layers=4, in_channels=in_channels, out_channels=in_channels)
+        self.tail = TailRefiner(in_channels=in_channels, num_layers=tail_num_layers)
 
     def _calculate_padding(self, height, width):
         """计算需要添加的padding"""
         pad_h = (self.window_size - height % self.window_size) % self.window_size
         pad_w = (self.window_size - width % self.window_size) % self.window_size
         return pad_h, pad_w
+
+    def _normalize(self, x: torch.Tensor) -> torch.Tensor:
+        mean = self.mean.to(dtype=x.dtype, device=x.device)
+        return (x - mean) * self.img_range
+
+    def _denormalize(self, x: torch.Tensor) -> torch.Tensor:
+        mean = self.mean.to(dtype=x.dtype, device=x.device)
+        return x / self.img_range + mean
+
+    def forward_hat_block(self, x: torch.Tensor) -> torch.Tensor:
+        """仅执行 HAT 主干，用于固定尺寸导出 ONNX"""
+        x_norm = self._normalize(x)
+        return self.hat_model(x_norm)
+
+    def forward_tail_block(self, hat_x: torch.Tensor, bicubic_x: torch.Tensor) -> torch.Tensor:
+        """执行尾部融合模块，输入应当与主干输出保持同一归一化空间"""
+        return self.tail(hat_x, bicubic_x)
+
+    def bicubic_from_input(self, x: torch.Tensor, scale: Optional[int] = None) -> torch.Tensor:
+        """对原始输入执行归一化后的 Bicubic 上采样，便于与 HAT 输出配对"""
+        if scale is None:
+            scale = self.scale
+        target_size = (x.shape[2] * scale, x.shape[3] * scale)
+        x_norm = self._normalize(x)
+        return F.interpolate(x_norm, size=target_size, mode='bicubic', align_corners=False)
 
     def _forward_hat_tiled(self, x):
         """对HAT模块进行分块前向传播"""
@@ -309,8 +351,7 @@ class KawaiiSR(nn.Module):
         Hp, Wp = x_padded.shape[2:]
 
         # 2. 归一化
-        self.mean = self.mean.type_as(x_padded)
-        x_norm = (x_padded - self.mean) * self.img_range
+        x_norm = self._normalize(x_padded)
 
         # 3. HAT模块处理（核心修改部分）
         # 如果启用分块，并且图像尺寸大于分块尺寸，则调用分块处理函数
@@ -323,17 +364,12 @@ class KawaiiSR(nn.Module):
         target_size = (Hp * self.scale, Wp * self.scale)
         # 先生成一个基础的上采样的图像
         bicubic_x = F.interpolate(x_norm, size=target_size, mode='bicubic', align_corners=False)
-        
-        gate_features = torch.cat([hat_x, bicubic_x], dim=1)
 
-        # 5. 融合
-        x_out = self.fusion_conv(gate_features)
+        # 5. 融合与尾部精炼
+        x_out = self.tail(hat_x, bicubic_x)
 
-        # 通过残差模块和输出卷积
-        x_out = self.residual_block(x_out)
-        
         # 6. 反归一化
-        x_final = x_out / self.img_range + self.mean
+        x_final = self._denormalize(x_out)
 
         # 7. 后处理：裁剪掉之前添加的padding
         if pad_h > 0 or pad_w > 0:

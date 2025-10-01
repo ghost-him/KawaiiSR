@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import logging
+from logging.handlers import RotatingFileHandler
 
 import torch
 import torch.nn as nn
@@ -64,14 +65,15 @@ class KawaiiTrainer:
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
 
-        # 日志系统（简单按 epoch 输出到文件 + 控制台）
-        self.logger = logging.getLogger('KawaiiTrainer')
+        # 日志系统（文件旋转 + 控制台）
+        self.logger = logging.getLogger(f'KawaiiTrainer[{id(self)}]')
         self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
         log_path = Path(self.cfg.checkpoint_dir) / 'training.log'
-        if not self.logger.handlers:  # 防止重复添加 handler
-            fh = logging.FileHandler(log_path, encoding='utf-8')
-            ch = logging.StreamHandler()
+        if not self.logger.handlers:
             fmt = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+            fh = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
+            ch = logging.StreamHandler()
             fh.setFormatter(fmt)
             ch.setFormatter(fmt)
             self.logger.addHandler(fh)
@@ -80,6 +82,25 @@ class KawaiiTrainer:
         # 训练状态
         self.global_step = 0
         self.best_metrics: Dict[str, float] = {}
+
+        gan_status_bits = []
+        if not self.cfg.gan.get('enabled', False):
+            gan_status_bits.append('gan.enabled=false')
+        if self.cfg.loss_weights.get('adversarial', 0.0) <= 0:
+            gan_status_bits.append('adversarial weight<=0')
+        if UNetDiscriminatorSN is None:
+            gan_status_bits.append('UNetDiscriminatorSN import failed')
+        if self.gan_enabled:
+            self._console('[Console] GAN path active: discriminator + adversarial loss engaged.')
+        else:
+            reason = ', '.join(gan_status_bits) if gan_status_bits else 'unknown reason'
+            self._console(f'[Console] GAN path disabled ({reason}).')
+
+    def _console(self, message: str):
+        try:
+            tqdm.write(message)
+        except Exception:
+            print(message)
 
     def _compute_metrics(self, sr: torch.Tensor, hr: torch.Tensor) -> Dict[str, float]:
         sr01 = ((sr + 1) / 2).clamp_(0.0, 1.0)
@@ -172,6 +193,11 @@ class KawaiiTrainer:
             train_csv='dataset_index.csv',
             val_csv='dataset_index.csv',
         )
+
+        self._console(
+            f"[Console] Dataset summary | train: {len(train_loader.dataset)} pairs | val: {len(val_loader.dataset)} pairs | batch: {self.cfg.batch_size}"
+        )
+
 
         # 恢复
         if resume and os.path.exists(resume):
@@ -309,6 +335,9 @@ class KawaiiTrainer:
                 if improved:
                     best_psnr = avg_psnr
                     self.best_metrics = {'psnr': best_psnr, 'ssim': avg_ssim, 'loss': avg_loss}
+                    self._console(
+                        f"[Console] New best PSNR {best_psnr:.2f}dB (SSIM {avg_ssim:.4f}, loss {avg_loss:.4f}) at epoch {epoch+1}"
+                    )
                 self._save_checkpoint(epoch=epoch, is_best=improved)
             else:
                 # 没做验证时也记录训练平均
@@ -322,3 +351,7 @@ class KawaiiTrainer:
         # 结束
         if self.writer:
             self.writer.close()
+
+        self._console(
+            f"[Console] Training finished. Best PSNR: {self.best_metrics.get('psnr', 0.0):.2f}dB | checkpoints saved to {self.cfg.checkpoint_dir}"
+        )

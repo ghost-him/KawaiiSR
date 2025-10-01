@@ -17,9 +17,9 @@ train:
 # 固定损失权重（不随阶段变化）
 loss_weights:
   pixel: 1.0
-  perceptual: 0.0
-  frequency: 0.0
-  vgg: 0.0
+  perceptual: 0.5
+  frequency: 0.3
+  vgg: 0.2
   adversarial: 0.0 # 关闭GAN以快速验证
 
 # GAN相关（快速验证关闭）
