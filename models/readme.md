@@ -77,7 +77,7 @@ lr_image_path,hr_image_path
 | pin_memory | DataLoader pin memory | GPU 训练建议开启 |
 | val_every | 每隔多少 epoch 验证 | 较小可更快监控，稍增耗时 |
 | log_every | 每隔多少 global step 写 TB | 太小 IO 频繁，太大曲线稀疏 |
-| early_stopping_patience | 早停容忍 | 当前代码未实现早停逻辑，仅保留字段 |
+| early_stopping_patience | 早停容忍 | 基于验证 PSNR 的早停耐心（按“验证轮次”计数）；<=0 关闭早停 |
 | tensorboard_dir | TensorBoard 日志目录 | 用于可视化曲线 |
 | checkpoint_dir | 模型权重保存目录 | 生成 last.pth / best.pth |
 
@@ -170,6 +170,11 @@ tensorboard --logdir ./models/logs/quick --port 6006
 	best_metrics: {psnr, ssim, loss},
 	config: <TrainingConfig.__dict__>
 }
+
+早停说明：
+- 以验证集平均 PSNR 是否提升为准。若在连续 N 次验证（N=early_stopping_patience）均未提升，则提前停止训练。
+- 计数单位为“验证轮次”，因此当 `val_every>1` 时，真实的容忍 epoch 数约为 `N * val_every`。
+- 有提升时会重置无提升计数；每次验证后始终刷新 `last.pth`，若提升则同时刷新 `best.pth`。
 ```
 
 ---

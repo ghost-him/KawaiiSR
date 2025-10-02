@@ -39,6 +39,7 @@ class KawaiiTrainer:
 
         # 模型与损失
         self.model = KawaiiSR(**self.cfg.model_config).to(self.device)
+        self._maybe_compile_model()
         self.loss_fn = KawaiiLoss(
             lambda_char=self.cfg.loss_weights.get('pixel', 1.0),
             lambda_lap=self.cfg.loss_weights.get('frequency', 0.0),
@@ -84,6 +85,8 @@ class KawaiiTrainer:
         # 训练状态
         self.global_step = 0
         self.best_metrics: Dict[str, float] = {}
+        # 早停计数（以“验证轮次”为单位统计无提升次数）
+        self._no_improve_validations = 0
 
         gan_status_bits = []
         if not self.cfg.gan.get('enabled', False):
@@ -103,6 +106,21 @@ class KawaiiTrainer:
             tqdm.write(message)
         except Exception:
             print(message)
+
+    def _maybe_compile_model(self):
+        compile_cfg = getattr(self.cfg, 'torch_compile', True)
+        if not compile_cfg:
+            return
+        if not hasattr(torch, 'compile'):
+            self._console('[Console] torch.compile 不可用，保持 eager 模式。')
+            return
+
+        compile_kwargs = compile_cfg if isinstance(compile_cfg, dict) else {}
+        try:
+            self.model = torch.compile(self.model, **compile_kwargs)
+            self._console('[Console] torch.compile 已启用，生成器将以编译模式训练。')
+        except Exception as exc:
+            self._console(f'[Console] torch.compile 失败 ({exc}），已回退至 eager 模式。')
 
     def _compute_metrics(self, sr: torch.Tensor, hr: torch.Tensor) -> Dict[str, float]:
         # 输入/输出均已在 [0,1]
@@ -207,6 +225,8 @@ class KawaiiTrainer:
             self.load_checkpoint(resume)
 
         best_psnr = self.best_metrics.get('psnr', 0.0)
+        # 读取早停耐心值（<=0 视为关闭早停）
+        patience = int(getattr(self.cfg, 'early_stopping_patience', 0) or 0)
 
         for epoch in range(self.cfg.epochs):
             self.model.train()
@@ -353,7 +373,23 @@ class KawaiiTrainer:
                     self._console(
                         f"[Console] New best PSNR {best_psnr:.2f}dB (SSIM {avg_ssim:.4f}, loss {avg_loss:.4f}) at epoch {epoch+1}"
                     )
-                self._save_checkpoint(epoch=epoch, is_best=improved)
+                    # 有提升则重置计数
+                    self._no_improve_validations = 0
+                else:
+                    # 无提升则计数+1
+                    self._no_improve_validations += 1
+                    self._save_checkpoint(epoch=epoch, is_best=improved)
+
+                # 早停判断：按“验证轮次”计数，而非所有 epoch
+                if patience > 0 and self._no_improve_validations >= patience:
+                    self._console(
+                        f"[Console] Early stopping triggered after {self._no_improve_validations} validations without improvement (patience={patience})."
+                    )
+                    # 记录并结束训练循环
+                    self.logger.info(
+                        f"Early stopping at epoch {epoch+1}: no improvement in {self._no_improve_validations} validation(s), patience={patience}"
+                    )
+                    break
             else:
                 # 没做验证时也记录训练平均
                 self.logger.info(

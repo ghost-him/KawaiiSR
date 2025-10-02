@@ -30,7 +30,7 @@ class SRDataset(Dataset):
         print(f"从CSV文件加载数据集: {len(self.data_index)} 对图像")
         
         # 验证文件存在性
-        self._validate_files()
+        #self._validate_files()
         
         # 定义变换（统一到 [0,1]，不做额外归一化）
         self.to_tensor = transforms.ToTensor()

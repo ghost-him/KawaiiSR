@@ -1,184 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pywt
-from .HAT import HAT, CAB, BigConv
 import math
-from typing import Optional
-
-class WaveletTransform2D(nn.Module):
-    """
-    Compute a two-dimensional wavelet transform.
-
-    This revised version behaves like a standard CNN downsampling layer,
-    halving the spatial dimensions for even-sized inputs.
-
-    Example:
-    loss = nn.MSELoss()
-    # Use an even-sized input for perfect reconstruction example
-    data = torch.rand(1, 3, 128, 256) 
-    DWT = WaveletTransform2D(wavelet="sym4")
-    IDWT = WaveletTransform2D(wavelet="sym4", inverse=True)
-
-    LL, LH, HL, HH = DWT(data) # (B, C, H / 2, W / 2) * 4
-    recdata = IDWT([LL, LH, HL, HH], original_size=data.shape)
-    print(f"Reconstruction Loss: {loss(data, recdata)}")
-    """
-
-    def __init__(self, inverse=False, wavelet="haar", dtype=torch.float32):
-        super(WaveletTransform2D, self).__init__()
-
-        wavelet = pywt.Wavelet(wavelet)
-
-        if isinstance(wavelet, tuple):
-            dec_lo, dec_hi, rec_lo, rec_hi = wavelet
-        else:
-            dec_lo, dec_hi, rec_lo, rec_hi = wavelet.filter_bank
-
-        self.inverse = inverse
-        if inverse is False:
-            # Forward DWT filters
-            lo = torch.tensor(dec_lo, dtype=dtype).flip(-1).unsqueeze(0)
-            hi = torch.tensor(dec_hi, dtype=dtype).flip(-1).unsqueeze(0)
-        else:
-            # Inverse DWT filters
-            lo = torch.tensor(rec_lo, dtype=dtype).unsqueeze(0)
-            hi = torch.tensor(rec_hi, dtype=dtype).unsqueeze(0)
-
-        self.build_filters(lo, hi)
-
-        # Calculate padding to behave like a standard strided convolution
-        # P = (KernelSize - Stride) / 2 for 'same' output, but for stride=2,
-        # we need P = (KernelSize - 2) / 2 to halve the dimension.
-        self.padding = (self.dim_size - 2) // 2
-
-    def build_filters(self, lo, hi):
-        # construct 2d filter
-        self.dim_size = lo.shape[-1]
-        ll = self.outer(lo, lo)
-        lh = self.outer(hi, lo)
-        hl = self.outer(lo, hi)
-        hh = self.outer(hi, hi)
-        filters = torch.stack([ll, lh, hl, hh], dim=0)
-        filters = filters.unsqueeze(1)
-        self.register_buffer("filters", filters)  # [4, 1, height, width]
-
-    def outer(self, a: torch.Tensor, b: torch.Tensor):
-        """Torch implementation of numpy's outer for 1d vectors."""
-        a_flat = torch.reshape(a, [-1])
-        b_flat = torch.reshape(b, [-1])
-        a_mul = torch.unsqueeze(a_flat, dim=-1)
-        b_mul = torch.unsqueeze(b_flat, dim=0)
-        return a_mul * b_mul
-
-
-    def forward(self, data, original_size=None):
-        if self.inverse is False:
-            b, c, h, w = data.shape
-            filters = self.filters.to(dtype=data.dtype, device=data.device).repeat(c, 1, 1, 1)
-            dec_res = F.conv2d(
-                data,
-                filters,
-                stride=2,
-                groups=c,
-                padding=self.padding,
-            )
-            dec_res = dec_res.view(b, 4, c, dec_res.shape[-2], dec_res.shape[-1])
-            LL, LH, HL, HH = dec_res.unbind(dim=1)
-            return LL, LH, HL, HH
-        else:
-            # Inverse transform
-            LL, LH, HL, HH = data
-            b, c, h, w = LL.shape
-            coeffs = torch.stack((LL, LH, HL, HH), dim=1).view(b, -1, h, w)
-            filters = self.filters.to(dtype=coeffs.dtype, device=coeffs.device).repeat(c, 1, 1, 1)
-            rec_res = F.conv_transpose2d(
-                coeffs,
-                filters,
-                stride=2,
-                groups=c,
-                padding=self.padding,
-            )
-
-            if original_size is not None:
-                _, _, H, W = original_size
-                rec_res = rec_res[..., :H, :W]
-
-            return rec_res
-
-
-
-class ResidualBlock(nn.Module):
-    """
-    一个由多个 BigConv 组成的 ResidualBlock
-    """
-    def __init__(self, num_layers, in_channels, out_channels):
-        super(ResidualBlock, self).__init__()
-        self.layers = nn.ModuleList()
-        self.num_layers = num_layers
-        self.down_channel_blocks = BigConv(in_channels=in_channels, out_channels=out_channels)
-
-        self.feature_blocks = nn.ModuleList([
-            BigConv(in_channels=out_channels, out_channels=out_channels)
-            for _ in range(num_layers)
-        ])
-        self.last_conv = BigConv(in_channels=out_channels * (num_layers + 1), out_channels=out_channels)
-
-        self.cab = CAB(num_feat=out_channels, squeeze_factor=max(out_channels // 8, 1))
-
-        self.dwt = WaveletTransform2D(wavelet="sym4")
-        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True)
-
-        self.lf_branch = nn.Sequential(
-            BigConv(in_channels=out_channels, out_channels=out_channels),
-            BigConv(in_channels=out_channels, out_channels=out_channels)
-        )
-
-        self.hf_branch = nn.Sequential(
-            nn.Conv2d(out_channels * 3, out_channels * 3, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(out_channels * 3, out_channels * 3, kernel_size=3, padding=1)
-        )
-
-    def forward(self, x):
-        # features 列表用于存储每一层的输出和初始输入
-        y = self.down_channel_blocks(x)
-        LL, LH, HL, HH = self.dwt(y) # (B, C, H / 2, W / 2) * 4
-        high = torch.cat([LH, HL, HH], dim = 1)
-        high = self.hf_branch(high) + high
-        LH, HL, HH = torch.chunk(high, 3, dim = 1)
-
-        LL = self.lf_branch(LL) + LL
-        wave_out = self.idwt([LL, LH, HL, HH])
-        
-        y = y + wave_out
-
-        out_features = [y]
-        hid = y
-        for i in range(self.num_layers):
-            hid = self.feature_blocks[i](hid)
-            out_features.append(hid)
-            hid = hid + y
-
-        out_features = torch.cat(out_features, dim = 1)
-        out_x = self.last_conv(out_features) + y
-        out_x = self.cab(out_x) + out_x
-        return out_x
-
-
-class TailRefiner(nn.Module):
-    """融合 HAT 输出与基础上采样结果的尾部模块，方便单独导出 ONNX"""
-
-    def __init__(self, in_channels: int, num_layers: int):
-        super(TailRefiner, self).__init__()
-        self.fusion_conv = BigConv(in_channels=in_channels * 2, out_channels=in_channels)
-        self.residual_block = ResidualBlock(num_layers=num_layers, in_channels=in_channels, out_channels=in_channels)
-
-    def forward(self, hat_x: torch.Tensor, bicubic_x: torch.Tensor) -> torch.Tensor:
-        gate_features = torch.cat([hat_x, bicubic_x], dim=1)
-        x_out = self.fusion_conv(gate_features)
-        x_out = self.residual_block(x_out)
-        return x_out
+from .HAT import HAT
 
 
 class KawaiiSR(nn.Module):
@@ -215,7 +39,7 @@ class KawaiiSR(nn.Module):
         self.use_tiling = use_tiling
         self.tile_size = tile_size
         self.tile_pad = tile_pad
-    # 整个训练/推理流程统一使用 [0,1] 输入输出；此处不做额外均值归一化
+        # 整个训练/推理流程统一使用 [0,1] 输入输出；此处不做额外均值归一化
         self.window_size = hat_window_size
         self.in_channels = in_channels
         self.hat_model = HAT(
@@ -241,9 +65,8 @@ class KawaiiSR(nn.Module):
             patch_norm=hat_patch_norm,
             use_checkpoint=hat_use_checkpoint,
             resi_connection=hat_resi_connection,
+            tail_num_layers=tail_num_layers,
         )
-
-        self.tail = TailRefiner(in_channels=in_channels, num_layers=tail_num_layers)
 
     def _calculate_padding(self, height, width):
         """计算需要添加的padding"""
@@ -252,19 +75,8 @@ class KawaiiSR(nn.Module):
         return pad_h, pad_w
 
     def forward_hat_block(self, x: torch.Tensor) -> torch.Tensor:
-        """仅执行 HAT 主干，用于固定尺寸导出 ONNX。假设输入 x ∈ [0,1]。"""
+        """仅执行 HAT 模型，便于固定尺寸导出 ONNX。假设输入 x ∈ [0,1]。"""
         return self.hat_model(x)
-
-    def forward_tail_block(self, hat_x: torch.Tensor, bicubic_x: torch.Tensor) -> torch.Tensor:
-        """执行尾部融合模块，输入应当与主干输出保持同一归一化空间"""
-        return self.tail(hat_x, bicubic_x)
-
-    def bicubic_from_input(self, x: torch.Tensor, scale: Optional[int] = None) -> torch.Tensor:
-        """对原始输入执行归一化后的 Bicubic 上采样，便于与 HAT 输出配对"""
-        if scale is None:
-            scale = self.scale
-        target_size = (x.shape[2] * scale, x.shape[3] * scale)
-        return F.interpolate(x, size=target_size, mode='bicubic', align_corners=False)
 
     def _forward_hat_tiled(self, x):
         """对HAT模块进行分块前向传播。假设输入 x ∈ [0,1]，不做额外归一化。"""
@@ -346,19 +158,11 @@ class KawaiiSR(nn.Module):
             hat_x = self._forward_hat_tiled(x_norm)
         else:
             hat_x = self.hat_model(x_norm)
-        
-        # 4. 后续模块处理（不分块）
-        target_size = (Hp * self.scale, Wp * self.scale)
-        # 先生成一个基础的上采样的图像
-        bicubic_x = F.interpolate(x_norm, size=target_size, mode='bicubic', align_corners=False)
 
-        # 5. 融合与尾部精炼
-        x_out = self.tail(hat_x, bicubic_x)
+        # 4. 模型已经完成精炼，直接取输出
+        x_final = hat_x
 
-        # 6. 不再反归一化，保持与 DataLoader 一致的张量域（[0,1]）
-        x_final = x_out
-
-        # 7. 后处理：裁剪掉之前添加的padding
+        # 5. 后处理：裁剪掉之前添加的padding
         if pad_h > 0 or pad_w > 0:
             target_h = original_h * self.scale
             target_w = original_w * self.scale

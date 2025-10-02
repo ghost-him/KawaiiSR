@@ -1,7 +1,7 @@
 train:
   device: cuda
   epochs: 3
-  batch_size: 8
+  batch_size: 1
   learning_rate: 5.0e-5
   mixed_precision: true
   gradient_clip_norm: 0.5

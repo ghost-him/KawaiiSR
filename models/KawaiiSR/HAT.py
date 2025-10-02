@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
+import pywt
 from itertools import repeat
 import collections.abc
 import warnings
@@ -109,6 +110,118 @@ class CAB(nn.Module):
 
     def forward(self, x):
         return self.cab(x)
+
+
+class WaveletTransform2D(nn.Module):
+    """Two-dimensional wavelet transform with CNN-like stride-2 behavior."""
+
+    def __init__(self, inverse: bool = False, wavelet: str = "haar", dtype: torch.dtype = torch.float32):
+        super().__init__()
+
+        wavelet_filters = pywt.Wavelet(wavelet)
+
+        if isinstance(wavelet_filters, tuple):
+            dec_lo, dec_hi, rec_lo, rec_hi = wavelet_filters
+        else:
+            dec_lo, dec_hi, rec_lo, rec_hi = wavelet_filters.filter_bank
+
+        self.inverse = inverse
+        if not inverse:
+            lo = torch.tensor(dec_lo, dtype=dtype).flip(-1).unsqueeze(0)
+            hi = torch.tensor(dec_hi, dtype=dtype).flip(-1).unsqueeze(0)
+        else:
+            lo = torch.tensor(rec_lo, dtype=dtype).unsqueeze(0)
+            hi = torch.tensor(rec_hi, dtype=dtype).unsqueeze(0)
+
+        self._build_filters(lo, hi)
+        self.padding = (self.dim_size - 2) // 2
+
+    def _build_filters(self, lo: torch.Tensor, hi: torch.Tensor) -> None:
+        self.dim_size = lo.shape[-1]
+        ll = self._outer(lo, lo)
+        lh = self._outer(hi, lo)
+        hl = self._outer(lo, hi)
+        hh = self._outer(hi, hi)
+        filters = torch.stack([ll, lh, hl, hh], dim=0).unsqueeze(1)
+        self.register_buffer("filters", filters)
+
+    @staticmethod
+    def _outer(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        a_flat = torch.reshape(a, [-1])
+        b_flat = torch.reshape(b, [-1])
+        return torch.unsqueeze(a_flat, dim=-1) * torch.unsqueeze(b_flat, dim=0)
+
+    def forward(self, data: torch.Tensor, original_size=None):  # noqa: D401 - same signature as original
+        if not self.inverse:
+            b, c, _, _ = data.shape
+            filters = self.filters.to(dtype=data.dtype, device=data.device).repeat(c, 1, 1, 1)
+            dec_res = F.conv2d(data, filters, stride=2, groups=c, padding=self.padding)
+            dec_res = dec_res.view(b, 4, c, dec_res.shape[-2], dec_res.shape[-1])
+            return dec_res.unbind(dim=1)
+
+        LL, LH, HL, HH = data
+        b, c, h, w = LL.shape
+        coeffs = torch.stack((LL, LH, HL, HH), dim=1).view(b, -1, h, w)
+        filters = self.filters.to(dtype=coeffs.dtype, device=coeffs.device).repeat(c, 1, 1, 1)
+        rec_res = F.conv_transpose2d(coeffs, filters, stride=2, groups=c, padding=self.padding)
+
+        if original_size is not None:
+            _, _, H, W = original_size
+            rec_res = rec_res[..., :H, :W]
+
+        return rec_res
+
+
+class ResidualBlock(nn.Module):
+    """Wavelet-enhanced residual block composed of stacked ``BigConv`` layers."""
+
+    def __init__(self, num_layers: int, in_channels: int, out_channels: int):
+        super().__init__()
+        self.num_layers = num_layers
+        self.down_channel_blocks = BigConv(in_channels=in_channels, out_channels=out_channels)
+        self.feature_blocks = nn.ModuleList([
+            BigConv(in_channels=out_channels, out_channels=out_channels) for _ in range(num_layers)
+        ])
+        self.last_conv = BigConv(in_channels=out_channels * (num_layers + 1), out_channels=out_channels)
+        self.cab = CAB(num_feat=out_channels, squeeze_factor=max(out_channels // 8, 1))
+
+        self.dwt = WaveletTransform2D(wavelet="sym4")
+        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True)
+
+        self.lf_branch = nn.Sequential(
+            BigConv(in_channels=out_channels, out_channels=out_channels),
+            BigConv(in_channels=out_channels, out_channels=out_channels),
+        )
+
+        self.hf_branch = nn.Sequential(
+            nn.Conv2d(out_channels * 3, out_channels * 3, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(out_channels * 3, out_channels * 3, kernel_size=3, padding=1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.down_channel_blocks(x)
+        LL, LH, HL, HH = self.dwt(y)
+        high = torch.cat([LH, HL, HH], dim=1)
+        high = self.hf_branch(high) + high
+        LH, HL, HH = torch.chunk(high, 3, dim=1)
+
+        LL = self.lf_branch(LL) + LL
+        wave_out = self.idwt([LL, LH, HL, HH])
+
+        y = y + wave_out
+
+        out_features = [y]
+        hid = y
+        for block in self.feature_blocks:
+            hid = block(hid)
+            out_features.append(hid)
+            hid = hid + y
+
+        out_features = torch.cat(out_features, dim=1)
+        out_x = self.last_conv(out_features) + y
+        out_x = self.cab(out_x) + out_x
+        return out_x
 
 
 class Mlp(nn.Module):
@@ -690,7 +803,7 @@ class HAT(nn.Module):
                  image_size=64,
                  patch_size=1,
                  in_channels=3,
-                 out_channels = 3,
+                 out_channels=3,
                  body_hid_channels=96,
                  upsampler_hid_channels=64,
                  depths=(6, 6, 6, 6),
@@ -709,6 +822,7 @@ class HAT(nn.Module):
                  patch_norm=True,
                  use_checkpoint=False,
                  resi_connection='1conv',
+                 tail_num_layers=4,
                  **kwargs):
         super(HAT, self).__init__()
 
@@ -802,7 +916,8 @@ class HAT(nn.Module):
             nn.PixelShuffle(2)
         )
 
-        self.conv_after_upsample = BigConv(in_channels=upsampler_hid_channels, out_channels = out_channels)
+        self.conv_after_upsample = BigConv(in_channels=upsampler_hid_channels, out_channels=upsampler_hid_channels)
+        self.output_refiner = ResidualBlock(num_layers=tail_num_layers, in_channels=upsampler_hid_channels, out_channels=out_channels)
         
         self.apply(self._init_weights)
 
@@ -909,4 +1024,5 @@ class HAT(nn.Module):
         x = self.conv_before_upsample(x)
         x = self.upsample(x)
         x = self.conv_after_upsample(x)
+        x = self.output_refiner(x)
         return x

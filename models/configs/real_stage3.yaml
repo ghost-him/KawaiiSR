@@ -1,30 +1,30 @@
 train:
-	device: cuda
-	epochs: 5
-	batch_size: 8
-	learning_rate: 1.0e-4
-	mixed_precision: true
-	gradient_clip_norm: 0.5
-	num_workers: 8
-	pin_memory: true
-	val_every: 1
-	log_every: 100
-	early_stopping_patience: 15
-	tensorboard_dir: ./models/logs/real_stage3
-	checkpoint_dir: ./models/checkpoints/real_stage3
+  device: cuda
+  epochs: 5
+  batch_size: 3
+  learning_rate: 1.0e-4
+  mixed_precision: false
+  gradient_clip_norm: 0.5
+  num_workers: 8
+  pin_memory: true
+  val_every: 1
+  log_every: 100
+  early_stopping_patience: 15
+  tensorboard_dir: ./models/logs/real_stage3
+  checkpoint_dir: ./models/checkpoints/real_stage3
 
 loss_weights:
-	pixel: 0.6
-	frequency: 0.15
-	perceptual: 0.0
-	vgg: 0.1
-	adversarial: 0.005   # 轻量GAN，稳定性优先
+  pixel: 0.6
+  frequency: 0.15
+  perceptual: 0.0
+  vgg: 0.1
+  adversarial: 0.005   # 轻量GAN，稳定性优先
 
 loss_options:
-	enable_anime_loss: false
+  enable_anime_loss: false
 
 gan:
-	enabled: true
-	discriminator_lr: 1.0e-4
-	disc_update_ratio: 1
+  enabled: true
+  discriminator_lr: 1.0e-4
+  disc_update_ratio: 1
 

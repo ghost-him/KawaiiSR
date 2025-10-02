@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import yaml
 
 
@@ -25,6 +25,7 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     mixed_precision: bool = False
     gradient_clip_norm: float = 1.0
+    torch_compile: Union[bool, Dict[str, Any]] = True
 
     # 检查点/日志配置
     checkpoint_dir: str = './checkpoints'
