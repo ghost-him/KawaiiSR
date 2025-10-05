@@ -7,11 +7,15 @@ train:
   gradient_clip_norm: 0.5
   num_workers: 8
   pin_memory: true
+  use_online_data: false
+  train_data_path: /DATA/data/train
+  val_data_path: /DATA/data/vali
   val_every: 1
   log_every: 100
   early_stopping_patience: 10
   tensorboard_dir: ./models/logs/anime_ft
   checkpoint_dir: ./models/checkpoints/anime_ft
+  torch_compile: false
 
 # 对动漫域，开启 AnimePerceptualLoss，并适度保留像素/频域与VGG
 loss_weights:
@@ -34,3 +38,19 @@ gan:
 #   use_tiling: false
 #   tile_size: 256
 #   tile_pad: 16
+online_data_options:
+  crop_size: 128        # 覆盖默认裁剪尺寸
+  scale: 2              # 覆盖放大倍数，仍需能整除 crop_size
+  downsample_filters: [nearest, bilinear, bicubic, lanczos]
+  noise_p: 0.2
+  noise_std_min: 0.001
+  noise_std_max: 0.02
+  blur_p: 0.3
+  blur_sigma_min: 0.4
+  blur_sigma_max: 1.5
+  jpeg_p: 0.3
+  jpeg_quality_min: 40
+  jpeg_quality_max: 95
+  webp_p: 0.3
+  webp_quality_min: 45
+  webp_quality_max: 95

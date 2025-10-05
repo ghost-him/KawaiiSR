@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 import yaml
 
 
@@ -17,6 +17,8 @@ class TrainingConfig:
     val_data_path: str
     num_workers: int = 4
     pin_memory: bool = True
+    use_online_data: bool = False
+    online_data_options: Dict[str, Any] = field(default_factory=dict)
 
     # 训练配置
     device: str = 'cuda'
@@ -25,7 +27,12 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     mixed_precision: bool = False
     gradient_clip_norm: float = 1.0
-    torch_compile: Union[bool, Dict[str, Any]] = True
+    torch_compile: bool = False
+    # 保存策略（多指标开关，true/false）。若全部为 False，则自动回退到 psnr。
+    save_on_psnr: bool = True
+    save_on_ssim: bool = False
+    save_on_lpips: bool = False
+    save_on_val_loss: bool = False
 
     # 检查点/日志配置
     checkpoint_dir: str = './checkpoints'
@@ -89,9 +96,9 @@ def get_default_model_config() -> Dict[str, Any]:
     }
 
 def create_training_config(
-    train_data_path: str,
-    val_data_path: str,
-    checkpoint_dir: str = './checkpoints',
+    train_data_path: Optional[str] = None,
+    val_data_path: Optional[str] = None,
+    checkpoint_dir: Optional[str] = None,
     yaml_path: Optional[str] = None
 ) -> TrainingConfig:
     """创建扁平训练配置，支持从 YAML 加载并与默认值合并"""
@@ -99,20 +106,33 @@ def create_training_config(
         'model_config': get_default_model_config(),
         'train_data_path': train_data_path,
         'val_data_path': val_data_path,
-        'checkpoint_dir': checkpoint_dir,
+        'checkpoint_dir': checkpoint_dir or './checkpoints',
+        'use_online_data': False,
+        'online_data_options': {},
     }
+
+    # 初始化占位，便于无 YAML 路径时仍能使用后续逻辑
+    model_overrides: Dict[str, Any] = {}
+    loss_weights: Dict[str, float] = {}
+    loss_options: Dict[str, Any] = {}
+    gan_cfg: Dict[str, Any] = {}
+    online_data_options_cfg: Dict[str, Any] = {}
+
+    # 记录 YAML 中 save_metrics 配置（保持在局部变量中，避免污染 base 字典）
+    yaml_save_metrics: Dict[str, Any] = {}
 
     # 从 YAML 读取并合并
     if yaml_path:
         with open(yaml_path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f) or {}
-        train_cfg = data.get('train', {})
+        train_cfg = data.get('train', {}) or {}
         model_overrides = data.get('model_config', {}) or data.get('model', {}) or {}
-        loss_weights = data.get('loss_weights', {})
-        loss_options = data.get('loss_options', {})
-        gan_cfg = data.get('gan', {})
-
-        # 合并到 base
+        loss_weights = data.get('loss_weights', {}) or {}
+        loss_options = data.get('loss_options', {}) or {}
+        gan_cfg = data.get('gan', {}) or {}
+        online_data_options_cfg = data.get('online_data_options', {}) or {}
+        yaml_save_metrics = data.get('save_metrics', {}) or {}
+        # 合并到 base（train 小节覆盖基础）
         base.update(train_cfg)
     # 覆盖模型配置
     base_model_cfg = get_default_model_config()
@@ -135,6 +155,38 @@ def create_training_config(
     base['loss_weights'] = {**default_loss_weights, **(loss_weights if yaml_path else {})}
     base['loss_options'] = {**default_loss_options, **(loss_options if yaml_path else {})}
     base['gan'] = {**default_gan, **(gan_cfg if yaml_path else {})}
+    if yaml_path and online_data_options_cfg:
+        base['online_data_options'] = online_data_options_cfg
+
+    # 规范 torch_compile 为布尔值开关
+    compile_flag = base.get('torch_compile', False)
+    if isinstance(compile_flag, str):
+        norm = compile_flag.strip().lower()
+        if norm in {'true', '1', 'yes', 'y'}:
+            compile_flag = True
+        elif norm in {'false', '0', 'no', 'n'}:
+            compile_flag = False
+    if not isinstance(compile_flag, bool):
+        raise ValueError('torch_compile 配置仅支持布尔值 true/false。')
+    base['torch_compile'] = compile_flag
+
+    # YAML 中可提供 save_metrics: {psnr: true, ssim: false, lpips: false, val_loss: false}
+    save_metrics_cfg = yaml_save_metrics
+    if isinstance(save_metrics_cfg, dict):
+        for k in ['psnr', 'ssim', 'lpips', 'val_loss']:
+            if k in save_metrics_cfg:
+                base[f'save_on_{k}'] = bool(save_metrics_cfg[k])
+    # 全部为 False 时，强制开启 psnr 作为兜底
+    if not any([base.get('save_on_psnr'), base.get('save_on_ssim'), base.get('save_on_lpips'), base.get('save_on_val_loss')]):
+        print('警告: 所有模型保存指标均为 False，已自动启用 psnr 作为兜底。')
+        base['save_on_psnr'] = True
+
+    if not base.get('train_data_path'):
+        raise ValueError('train_data_path 未在参数或配置文件中提供。')
+    if not base.get('val_data_path'):
+        raise ValueError('val_data_path 未在参数或配置文件中提供。')
+    if not base.get('checkpoint_dir'):
+        base['checkpoint_dir'] = './checkpoints'
 
     return TrainingConfig(**base)
 

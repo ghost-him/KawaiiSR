@@ -8,11 +8,15 @@ train:
   gradient_clip_norm: 1.0
   num_workers: 8
   pin_memory: true
+  use_online_data: false
+  train_data_path: ./models/data/train
+  val_data_path: ./models/data/validation
   val_every: 1
   log_every: 20
   early_stopping_patience: 100 # 短跑验证，基本不触发早停
   tensorboard_dir: ./models/logs/quick
   checkpoint_dir: ./models/checkpoints/quick
+  torch_compile: false
 
 # 固定损失权重（不随阶段变化）
 loss_weights:

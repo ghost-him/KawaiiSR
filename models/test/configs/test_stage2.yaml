@@ -1,40 +1,40 @@
 train:
   device: cuda
-  epochs: 30
+  epochs: 10
   batch_size: 3
-  learning_rate: 2.0e-4
+  learning_rate: 1.5e-4
   mixed_precision: false
   gradient_clip_norm: 1.0
   num_workers: 24
   pin_memory: true
   use_online_data: true
-  train_data_path: /DATA/LSDIR/data
-  val_data_path: /DATA/LSDIR/vali
+  train_data_path: ./models/test/data/train
+  val_data_path: ./models/test/data/vali
   val_every: 1
   log_every: 100
-  early_stopping_patience: 10
-  tensorboard_dir: ./models/logs/real_stage1
-  checkpoint_dir: ./models/checkpoints/real_stage1
+  early_stopping_patience: 12
+  tensorboard_dir: ./models/test/logs/real_stage12
+  checkpoint_dir: ./models/test/checkpoints/real_stage2
   torch_compile: false
 
 loss_weights:
-  pixel: 1.0      # 仅像素/频域，稳定收敛
-  frequency: 0.2  # 轻微频域约束，帮助边缘
+  pixel: 0.9
+  frequency: 0.15
   perceptual: 0.0
-  vgg: 0.0
+  vgg: 0.03          # 使用VGG感知增强纹理
   adversarial: 0.0
 
 loss_options:
   enable_anime_loss: false
 
+save_metrics:
+  psnr: true
+  lpips: true
+
 gan:
   enabled: false
   discriminator_lr: 1.0e-4
   disc_update_ratio: 1
-
-save_metrics:
-  psnr: true
-  lpips: true
 
 online_data_options:
   crop_size: 128        # 覆盖默认裁剪尺寸
@@ -43,12 +43,12 @@ online_data_options:
   noise_p: 0.2
   noise_std_min: 0.001
   noise_std_max: 0.03
-  blur_p: 0.2
+  blur_p: 0.3
   blur_sigma_min: 0.4
   blur_sigma_max: 1.5
-  jpeg_p: 0.3
+  jpeg_p: 0.4
   jpeg_quality_min: 40
   jpeg_quality_max: 95
-  webp_p: 0.3
+  webp_p: 0.4
   webp_quality_min: 45
   webp_quality_max: 95

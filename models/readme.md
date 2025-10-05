@@ -108,7 +108,9 @@ lr_image_path,hr_image_path
 --val_dir     验证数据根目录
 --ckpt_dir    检查点输出目录（内层还会引用配置里的 checkpoint_dir）
 --config      YAML 配置文件路径
---resume      （可选）已有 checkpoint（best/last）继续训练
+--weights     （可选）仅加载模型权重，重新开始新的训练流程
+--resume-weights （可选）恢复训练使用的模型权重文件（如 last_weights.pth）
+--resume-state   （可选）恢复训练所需的优化器/调度器状态（如 last_state.pth）
 ```
 注意：YAML 中的 `checkpoint_dir` 会覆盖命令行 `--ckpt_dir` 的作用范围（两者需保持一致以免混淆）。建议：命令行的 `--ckpt_dir` 与 YAML 里的 `train.checkpoint_dir` 设为相同路径。
 
@@ -122,13 +124,22 @@ python models/train.py \
 	--ckpt_dir /data/SR/exp1_ckpts \
 	--config models/configs/quick_validate.yaml
 
-# 使用已有 best.pth 继续
+# 使用已有 best_weights.pth 作为初始化（不恢复优化器状态）
 python models/train.py \
 	--train_dir /data/SR/train \
 	--val_dir /data/SR/validation \
 	--ckpt_dir /data/SR/exp1_ckpts \
 	--config models/configs/quick_validate.yaml \
-	--resume /data/SR/exp1_ckpts/best.pth
+	--weights /data/SR/exp1_ckpts/best_weights.pth
+
+# 在原断点继续训练
+python models/train.py \
+	--train_dir /data/SR/train \
+	--val_dir /data/SR/validation \
+	--ckpt_dir /data/SR/exp1_ckpts \
+	--config models/configs/quick_validate.yaml \
+	--resume-weights /data/SR/exp1_ckpts/last_weights.pth \
+	--resume-state /data/SR/exp1_ckpts/last_state.pth
 
 # 切换新实验（不同输出目录）
 python models/train.py \
@@ -142,9 +153,11 @@ python models/train.py \
 ### 6. 日志与检查点结构
 在 `checkpoint_dir` 下：
 ```
-last.pth        # 最近一次保存的状态（含优化器、调度器、scaler、config）
-best.pth        # 验证 PSNR 最优的完整状态
-training.log    # 每个 epoch 的聚合日志
+last_weights.pth  # 最近一次保存的模型权重（同时保留兼容用的 last.pth）
+last_state.pth    # 最近一次保存的训练状态（优化器/调度器/scaler 等）
+best_weights.pth  # 验证最佳时的模型权重（同时保留 best.pth）
+best_state.pth    # 验证最佳时对应的训练状态
+training.log      # 每个 epoch 的聚合日志
 ```
 TensorBoard：位于 `tensorboard_dir`（如 `./models/logs/quick`），包含：
 ```
@@ -159,16 +172,23 @@ train/lr
 tensorboard --logdir ./models/logs/quick --port 6006
 ```
 
-`*.pth` 内容（字典）：
+权重文件 (`*_weights.pth` / `best.pth` / `last.pth`) 内容：
+```
+{
+	model_state_dict,
+	config: <TrainingConfig.__dict__>
+}
+
+状态文件 (`*_state.pth`) 内容：
 ```
 {
 	epoch, global_step,
-	model_state_dict,
 	optimizer_state_dict,
 	scheduler_state_dict,
 	scaler_state_dict,
 	best_metrics: {psnr, ssim, loss},
-	config: <TrainingConfig.__dict__>
+	no_improve_validations,
+	scheduler_total_steps
 }
 
 早停说明：

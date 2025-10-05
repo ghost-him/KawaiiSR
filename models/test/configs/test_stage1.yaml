@@ -2,19 +2,19 @@ train:
   device: cuda
   epochs: 30
   batch_size: 3
-  learning_rate: 2.0e-4
+  learning_rate: 1.0e-3
   mixed_precision: false
   gradient_clip_norm: 1.0
   num_workers: 24
   pin_memory: true
   use_online_data: true
-  train_data_path: /DATA/LSDIR/data
-  val_data_path: /DATA/LSDIR/vali
+  train_data_path: ./models/test/data/train
+  val_data_path: ./models/test/data/vali
   val_every: 1
   log_every: 100
   early_stopping_patience: 10
-  tensorboard_dir: ./models/logs/real_stage1
-  checkpoint_dir: ./models/checkpoints/real_stage1
+  tensorboard_dir: ./models/test/logs/real_stage1
+  checkpoint_dir: ./models/test/checkpoints/real_stage1
   torch_compile: false
 
 loss_weights:
@@ -33,7 +33,6 @@ gan:
   disc_update_ratio: 1
 
 save_metrics:
-  psnr: true
   lpips: true
 
 online_data_options:
