@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import GradScaler, autocast
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 try:
@@ -17,6 +16,7 @@ try:
 except Exception:
     LearnedPerceptualImagePatchSimilarity = None
 from tqdm import tqdm
+import time
 
 from train_config import TrainingConfig
 from data_loader import (
@@ -25,12 +25,61 @@ from data_loader import (
     OnTheFlyOptions,
 )
 from KawaiiSR.KawaiiSR import KawaiiSR
-from loss.KawaiiLoss import KawaiiLoss
+from loss.KawaiiLoss import KawaiiLoss, DiscriminatorLoss
 
 try:
     from Discriminator.UNetDiscriminatorSN import UNetDiscriminatorSN
 except Exception:
     UNetDiscriminatorSN = None
+
+
+class _CUDAPrefetcher:
+    """CUDA 异步预取，减少数据拷贝对训练主流的阻塞。"""
+
+    def __init__(self, loader, device: torch.device):
+        self.loader = loader
+        self.device = torch.device(device)
+
+    def __len__(self):
+        return len(self.loader)
+
+    def __iter__(self):
+        if self.device.type != 'cuda':
+            yield from self.loader
+            return
+
+        stream = torch.cuda.Stream(device=self.device)
+        loader_iter = iter(self.loader)
+        next_batch = None
+        finished = False
+
+        def _move_to_device(batch):
+            if torch.is_tensor(batch):
+                return batch.to(self.device, non_blocking=True)
+            if isinstance(batch, (list, tuple)):
+                return type(batch)(_move_to_device(item) for item in batch)
+            if isinstance(batch, dict):
+                return {k: _move_to_device(v) for k, v in batch.items()}
+            return batch
+
+        def _prefetch():
+            nonlocal next_batch, finished
+            try:
+                batch = next(loader_iter)
+            except StopIteration:
+                finished = True
+                next_batch = None
+                return
+            with torch.cuda.stream(stream):
+                next_batch = _move_to_device(batch)
+
+        _prefetch()
+        while not finished:
+            torch.cuda.current_stream(device=self.device).wait_stream(stream)
+            batch = next_batch
+            _prefetch()
+            if batch is not None:
+                yield batch
 
 
 class KawaiiTrainer:
@@ -41,20 +90,32 @@ class KawaiiTrainer:
 
         # 目录
         Path(self.cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.cfg.tensorboard_dir).mkdir(parents=True, exist_ok=True)
 
         # 设备
         self.device = torch.device(self.cfg.device if torch.cuda.is_available() or self.cfg.device == 'cpu' else 'cpu')
+        if self.device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
+            if getattr(self.cfg, 'allow_tf32', True):
+                try:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                    torch.backends.cudnn.allow_tf32 = True
+                except AttributeError:
+                    pass
+        self._non_blocking = self.device.type == 'cuda' and bool(self.cfg.pin_memory)
 
         # 模型与损失
         self.model = KawaiiSR(**self.cfg.model_config).to(self.device)
         self._maybe_compile_model()
+        # 支持全局损失缩放：在不改变各损失相对比例的情况下统一放大/缩小总梯度规模
+        self.loss_global_scale = float(getattr(self.cfg, 'loss_global_scale', 1.0))
+        if self.loss_global_scale <= 0:
+            raise ValueError('loss_global_scale 必须大于 0。')
         self.loss_fn = KawaiiLoss(
-            lambda_char=self.cfg.loss_weights.get('pixel', 1.0),
-            lambda_lap=self.cfg.loss_weights.get('frequency', 0.0),
-            lambda_perc=self.cfg.loss_weights.get('perceptual', 0.0),
-            lambda_adv=self.cfg.loss_weights.get('adversarial', 0.0),
-            lambda_vgg=self.cfg.loss_weights.get('vgg', 0.0),
+            lambda_char=self.cfg.loss_weights.get('pixel', 1.0) * self.loss_global_scale,
+            lambda_lap=self.cfg.loss_weights.get('frequency', 0.0) * self.loss_global_scale,
+            lambda_perc=self.cfg.loss_weights.get('perceptual', 0.0) * self.loss_global_scale,
+            lambda_adv=self.cfg.loss_weights.get('adversarial', 0.0) * self.loss_global_scale,
+            lambda_vgg=self.cfg.loss_weights.get('vgg', 0.0) * self.loss_global_scale,
             enable_anime_loss=bool(self.cfg.loss_options.get('enable_anime_loss', False)),
             device=str(self.device)
         )
@@ -63,9 +124,12 @@ class KawaiiTrainer:
         self.gan_enabled = bool(self.cfg.gan.get('enabled', False) and self.cfg.loss_weights.get('adversarial', 0.0) > 0)
         if self.gan_enabled and UNetDiscriminatorSN is not None:
             self.disc = UNetDiscriminatorSN(num_in_ch=3, num_feat=64, skip_connection=True).to(self.device)
-            self.disc_opt = optim.Adam(self.disc.parameters(), lr=float(self.cfg.gan.get('discriminator_lr', 1e-4)), betas=(0.5, 0.999))
+            self.disc_opt = optim.AdamW(self.disc.parameters(), lr=float(self.cfg.gan.get('discriminator_lr', 1e-4)), betas=(0.5, 0.999))
+            # 使用统一的 Hinge 判别器损失实现，避免与 KawaiiLoss 中的生成器对抗项不一致
+            self.disc_loss_fn = DiscriminatorLoss(device=str(self.device))
         else:
             self.disc, self.disc_opt = None, None
+            self.disc_loss_fn = None
 
         # 优化器与调度器（调度器在 train() 中根据 batch 数动态初始化）
         self.opt = optim.AdamW(self.model.parameters(), lr=self.cfg.learning_rate, betas=(0.9, 0.999), weight_decay=1e-4)
@@ -73,7 +137,6 @@ class KawaiiTrainer:
 
         # AMP、日志、指标
         self.scaler = GradScaler(enabled=self.cfg.mixed_precision)
-        self.writer = SummaryWriter(log_dir=str(Path(self.cfg.tensorboard_dir)))
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.lpips = None
@@ -150,6 +213,11 @@ class KawaiiTrainer:
             T_max=int(total_steps),
             eta_min=self.cfg.learning_rate * 0.1,
         )
+
+    def _wrap_loader(self, loader):
+        if getattr(self.cfg, 'enable_cuda_prefetch', False) and self.device.type == 'cuda':
+            return _CUDAPrefetcher(loader, device=self.device)
+        return loader
 
     def load_weights(self, path: str, *, strict: bool = True) -> Dict[str, Any]:
         """加载仅包含模型权重的文件，可用于全新训练的热身。"""
@@ -228,13 +296,13 @@ class KawaiiTrainer:
             return 0.0
         self.disc.train()
         self.disc_opt.zero_grad(set_to_none=True)
-        # HingeGAN-like losses if present in KawaiiLoss; otherwise simple BCE-like signals
-        real_pred = self.disc(real)
-        fake_pred = self.disc(fake.detach())
-        # 使用最简单的hinge实现（不依赖外部loss文件）
-        loss_real = torch.relu(1.0 - real_pred).mean()
-        loss_fake = torch.relu(1.0 + fake_pred).mean()
-        loss_d = loss_real + loss_fake
+        # 统一使用 Hinge 判别器损失
+        real_logits = self.disc(real)
+        fake_logits = self.disc(fake.detach())
+        if self.disc_loss_fn is not None:
+            loss_d = self.disc_loss_fn(real_logits, fake_logits)
+        else:
+            panic("Discriminator loss function not defined.")
         loss_d.backward()
         self.disc_opt.step()
         return float(loss_d.item())
@@ -254,6 +322,7 @@ class KawaiiTrainer:
     def _save_checkpoint(self, epoch: int, is_best: bool):
         checkpoint_dir = Path(self.cfg.checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        t0 = time.perf_counter()
 
         weights_payload = {
             'model_state_dict': self.model.state_dict(),
@@ -276,6 +345,11 @@ class KawaiiTrainer:
         if is_best:
             torch.save(weights_payload, checkpoint_dir / 'best_weights.pth')
             torch.save(state_payload, checkpoint_dir / 'best_state.pth')
+        dt = time.perf_counter() - t0
+        try:
+            self.logger.info(f"Checkpoint saved (epoch={epoch+1}, best={is_best}) in {dt:.2f}s")
+        except Exception:
+            self._console(f"[Console] Checkpoint saved in {dt:.2f}s")
 
     def train(
         self,
@@ -338,6 +412,8 @@ class KawaiiTrainer:
                 batch_size=self.cfg.batch_size,
                 num_workers=self.cfg.num_workers,
                 pin_memory=self.cfg.pin_memory,
+                prefetch_factor=self.cfg.dataloader_prefetch_factor,
+                persistent_workers=self.cfg.dataloader_persistent_workers,
                 options=options,
             )
             pipeline_mode = 'online'
@@ -348,6 +424,8 @@ class KawaiiTrainer:
                 batch_size=self.cfg.batch_size,
                 num_workers=self.cfg.num_workers,
                 pin_memory=self.cfg.pin_memory,
+                prefetch_factor=self.cfg.dataloader_prefetch_factor,
+                persistent_workers=self.cfg.dataloader_persistent_workers,
                 train_csv='dataset_index.csv',
                 val_csv='dataset_index.csv',
             )
@@ -391,6 +469,7 @@ class KawaiiTrainer:
         for epoch in range(start_epoch, self.cfg.epochs):
             final_epoch_idx = epoch
             self.model.train()
+            epoch_start_wall = time.perf_counter()
             # 训练期内统计
             train_loss_sum = 0.0
             train_psnr_sum = 0.0
@@ -398,15 +477,26 @@ class KawaiiTrainer:
             train_disc_loss_sum = 0.0
             batch_count = 0
             # 使用 dynamic_ncols=True 让 tqdm 自适应当前终端宽度，避免固定 100 导致信息被截断
+            train_iterable = self._wrap_loader(train_loader)
             pbar = tqdm(
-                train_loader,
+                train_iterable,
                 desc=f"Train {epoch+1}/{self.cfg.epochs}",
                 leave=False,
                 dynamic_ncols=True,
             )
+            data_time_sum = 0.0
+            step_time_sum = 0.0
+            batch_fetch_start = time.perf_counter()
             for i, (lr_img, hr_img) in enumerate(pbar):
-                lr_img = lr_img.to(self.device)
-                hr_img = hr_img.to(self.device)
+                data_wait = time.perf_counter() - batch_fetch_start
+                data_time_sum += data_wait
+
+                if lr_img.device != self.device:
+                    lr_img = lr_img.to(self.device, non_blocking=self._non_blocking)
+                if hr_img.device != self.device:
+                    hr_img = hr_img.to(self.device, non_blocking=self._non_blocking)
+
+                compute_start = time.perf_counter()
 
                 # 判别器更新（若启用）
                 disc_loss = 0.0
@@ -424,6 +514,12 @@ class KawaiiTrainer:
                     for p in self.disc.parameters():
                         disc_prev_requires_grad.append(p.requires_grad)
                         p.requires_grad = False
+
+                # 在生成器步中将判别器切到 eval，避免 BN/状态在 G 反传时被更新
+                disc_prev_mode = None
+                if self.disc is not None:
+                    disc_prev_mode = self.disc.training
+                    self.disc.eval()
 
                 if self.cfg.mixed_precision:
                     with autocast():
@@ -443,6 +539,10 @@ class KawaiiTrainer:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.gradient_clip_norm)
                     self.opt.step()
 
+                # 恢复判别器训练/评估模式
+                if self.disc is not None and disc_prev_mode is not None:
+                    self.disc.train(disc_prev_mode)
+
                 if self.sched:
                     self.sched.step()
 
@@ -459,7 +559,8 @@ class KawaiiTrainer:
                 for name, raw_val in parts.items():
                     if name == 'total_g_loss':
                         continue  # 跳过总和字段
-                    weight = float(self.cfg.loss_weights.get(name, 0.0))
+                    # 与实际训练一致：显示值也乘以全局缩放系数
+                    weight = float(self.cfg.loss_weights.get(name, 0.0)) * self.loss_global_scale
                     if weight <= 0:
                         continue  # 未启用
                     try:
@@ -492,20 +593,11 @@ class KawaiiTrainer:
                 train_disc_loss_sum += float(disc_loss)
                 batch_count += 1
 
-                # 批日志（TensorBoard）
-                if self.writer and (self.global_step % self.cfg.log_every == 0):
-                    self.writer.add_scalar('train/total_loss', float(total_loss.item()), self.global_step)
-                    for k, v in parts.items():
-                        self.writer.add_scalar(f'train/loss_{k}', float(v), self.global_step)
-                    self.writer.add_scalar('train/psnr', metrics['psnr'], self.global_step)
-                    self.writer.add_scalar('train/ssim', metrics['ssim'], self.global_step)
-                    # 训练过程中始终记录学习率，方便在未启用 GAN 时也能观察到 per-batch 调度曲线
-                    if self.sched:
-                        self.writer.add_scalar('train/lr', float(self.opt.param_groups[0]['lr']), self.global_step)
-                    if self.disc is not None:
-                        self.writer.add_scalar('train/disc_loss', float(disc_loss), self.global_step)
+                # 仅日志输出
 
                 self.global_step += 1
+                step_time_sum += time.perf_counter() - compute_start
+                batch_fetch_start = time.perf_counter()
 
             # 计算训练平均
             if batch_count > 0:
@@ -513,22 +605,18 @@ class KawaiiTrainer:
                 avg_train_psnr = train_psnr_sum / batch_count
                 avg_train_ssim = train_ssim_sum / batch_count
                 avg_train_disc = train_disc_loss_sum / batch_count if self.gan_enabled else 0.0
+                avg_data_time = data_time_sum / batch_count
+                avg_step_time = step_time_sum / batch_count
             else:
                 avg_train_loss = avg_train_psnr = avg_train_ssim = avg_train_disc = 0.0
+                avg_data_time = avg_step_time = 0.0
 
-            # 写入 epoch 级训练平均到 TensorBoard
-            if self.writer:
-                self.writer.add_scalar('epoch/train_loss', avg_train_loss, epoch)
-                self.writer.add_scalar('epoch/train_psnr', avg_train_psnr, epoch)
-                self.writer.add_scalar('epoch/train_ssim', avg_train_ssim, epoch)
-                if self.gan_enabled:
-                    self.writer.add_scalar('epoch/train_disc_loss', avg_train_disc, epoch)
-                if self.sched:
-                    self.writer.add_scalar('epoch/lr', self.opt.param_groups[0]['lr'], epoch)
+            # 仅日志输出
 
             # 验证
             if has_validation and (epoch % self.cfg.val_every) == 0:
                 self.model.eval()
+                val_start_wall = time.perf_counter()
                 val_losses = []
                 val_psnr = []
                 val_ssim = []
@@ -540,8 +628,10 @@ class KawaiiTrainer:
                         leave=False,
                         dynamic_ncols=True,
                     ):
-                        lr_img = lr_img.to(self.device)
-                        hr_img = hr_img.to(self.device)
+                        if lr_img.device != self.device:
+                            lr_img = lr_img.to(self.device, non_blocking=self._non_blocking)
+                        if hr_img.device != self.device:
+                            hr_img = hr_img.to(self.device, non_blocking=self._non_blocking)
                         sr_img = self.model(lr_img)
                         total_loss, _ = self._compute_total_loss(sr_img, hr_img)
                         metrics = self._compute_metrics(sr_img, hr_img)
@@ -557,14 +647,11 @@ class KawaiiTrainer:
                 avg_lpips = None
                 if val_lpips is not None and len(val_lpips) > 0:
                     avg_lpips = float(sum(val_lpips) / len(val_lpips))
+                val_time_wall = time.perf_counter() - val_start_wall
+                epoch_time_wall = time.perf_counter() - epoch_start_wall
+                imgs_per_sec = (batch_count * self.cfg.batch_size) / max(1e-6, (data_time_sum + step_time_sum))
 
-                # 写入日志
-                if self.writer:
-                    self.writer.add_scalar('val/loss', avg_loss, epoch)
-                    self.writer.add_scalar('val/psnr', avg_psnr, epoch)
-                    self.writer.add_scalar('val/ssim', avg_ssim, epoch)
-                    if avg_lpips is not None:
-                        self.writer.add_scalar('val/lpips', avg_lpips, epoch)
+                # 仅日志输出
 
                 # 日志输出（含训练与验证平均）
                 self.logger.info(
@@ -572,6 +659,7 @@ class KawaiiTrainer:
                     f"Train: loss={avg_train_loss:.4f} psnr={avg_train_psnr:.2f} ssim={avg_train_ssim:.4f}"
                     + (f" d_loss={avg_train_disc:.4f}" if self.gan_enabled else "") +
                     f" || Val: loss={avg_loss:.4f} psnr={avg_psnr:.2f} ssim={avg_ssim:.4f} | lr={self.opt.param_groups[0]['lr']:.2e}"
+                    + f" | data_t={avg_data_time*1000:.1f}ms step_t={avg_step_time*1000:.1f}ms val_t={val_time_wall:.1f}s epoch_t={epoch_time_wall:.1f}s imgs/s~{imgs_per_sec:.1f}"
                 )
 
                 # 保存
@@ -608,16 +696,14 @@ class KawaiiTrainer:
                     f"Epoch {epoch+1:03d}/{self.cfg.epochs} | "
                     f"Train: loss={avg_train_loss:.4f} psnr={avg_train_psnr:.2f} ssim={avg_train_ssim:.4f}"
                     + (f" d_loss={avg_train_disc:.4f}" if self.gan_enabled else "") +
-                    f" | lr={self.opt.param_groups[0]['lr']:.2e}"
+                    f" | lr={self.opt.param_groups[0]['lr']:.2e} data_t={avg_data_time*1000:.1f}ms step_t={avg_step_time*1000:.1f}ms"
                 )
 
         if not did_any_validation and final_epoch_idx >= 0:
             self._console('[Console] 未执行验证，仍会保存最后一次权重。')
             self._save_checkpoint(epoch=final_epoch_idx, is_best=False)
 
-        # 结束
-        if self.writer:
-            self.writer.close()
+    # 结束
 
         self._console(
             f"[Console] Training finished. Best PSNR: {self.best_metrics.get('psnr', 0.0):.2f}dB | checkpoints saved to {self.cfg.checkpoint_dir}"

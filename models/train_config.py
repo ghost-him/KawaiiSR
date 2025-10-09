@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
@@ -19,6 +18,14 @@ class TrainingConfig:
     pin_memory: bool = True
     use_online_data: bool = False
     online_data_options: Dict[str, Any] = field(default_factory=dict)
+    preload_all_images: bool = False  # 顶层快捷开关，若为 True 且使用在线数据，则强制 OnTheFly 预加载
+    dataloader_prefetch_factor: int = 2
+    dataloader_persistent_workers: bool = False
+    enable_cuda_prefetch: bool = False
+    allow_tf32: bool = True
+
+    # 损失全局缩放
+    loss_global_scale: float = 1.0
 
     # 训练配置
     device: str = 'cuda'
@@ -36,8 +43,6 @@ class TrainingConfig:
 
     # 检查点/日志配置
     checkpoint_dir: str = './checkpoints'
-    keep_last_n_checkpoints: int = 3
-    tensorboard_dir: str = './logs'
     log_every: int = 100
 
     # 验证/早停
@@ -95,100 +100,220 @@ def get_default_model_config() -> Dict[str, Any]:
         'hat_resi_connection': '1conv'
     }
 
+DEFAULT_LOSS_WEIGHTS = {
+    'pixel': 1.0,
+    'perceptual': 0.1,
+    'frequency': 0.0,
+    'vgg': 0.0,
+    'adversarial': 0.0,
+}
+
+DEFAULT_LOSS_OPTIONS = {'enable_anime_loss': False}
+
+DEFAULT_GAN_CFG = {
+    'enabled': False,
+    'discriminator_lr': 1e-4,
+    'disc_update_ratio': 1,
+}
+
+SAVE_METRIC_KEYS = ('psnr', 'ssim', 'lpips', 'val_loss')
+
+
+def _ensure_required_dict(name: str, value: Any) -> Dict[str, Any]:
+    if value is None:
+        raise ValueError(f'配置缺少必要字段 "{name}"。')
+    if not isinstance(value, dict):
+        raise ValueError(f'配置项 "{name}" 必须是字典。')
+    return dict(value)
+
+
+def _validate_dict_keys(name: str, value: Dict[str, Any], required_keys) -> None:
+    missing = [k for k in required_keys if k not in value]
+    if missing:
+        raise ValueError(f'配置项 "{name}" 缺少必要键: {", ".join(missing)}。')
+
+
 def create_training_config(
     train_data_path: Optional[str] = None,
     val_data_path: Optional[str] = None,
     checkpoint_dir: Optional[str] = None,
     yaml_path: Optional[str] = None
 ) -> TrainingConfig:
-    """创建扁平训练配置，支持从 YAML 加载并与默认值合并"""
-    base: Dict[str, Any] = {
-        'model_config': get_default_model_config(),
-        'train_data_path': train_data_path,
-        'val_data_path': val_data_path,
-        'checkpoint_dir': checkpoint_dir or './checkpoints',
-        'use_online_data': False,
-        'online_data_options': {},
-    }
+    """创建扁平训练配置；严格遵循 YAML/参数，缺失或冲突直接报错。"""
 
-    # 初始化占位，便于无 YAML 路径时仍能使用后续逻辑
-    model_overrides: Dict[str, Any] = {}
-    loss_weights: Dict[str, float] = {}
-    loss_options: Dict[str, Any] = {}
-    gan_cfg: Dict[str, Any] = {}
-    online_data_options_cfg: Dict[str, Any] = {}
+    config_payload: Dict[str, Any] = {}
+    yaml_mode = yaml_path is not None
 
-    # 记录 YAML 中 save_metrics 配置（保持在局部变量中，避免污染 base 字典）
-    yaml_save_metrics: Dict[str, Any] = {}
-
-    # 从 YAML 读取并合并
-    if yaml_path:
+    if yaml_mode:
         with open(yaml_path, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f) or {}
-        train_cfg = data.get('train', {}) or {}
-        model_overrides = data.get('model_config', {}) or data.get('model', {}) or {}
-        loss_weights = data.get('loss_weights', {}) or {}
-        loss_options = data.get('loss_options', {}) or {}
-        gan_cfg = data.get('gan', {}) or {}
-        online_data_options_cfg = data.get('online_data_options', {}) or {}
-        yaml_save_metrics = data.get('save_metrics', {}) or {}
-        # 合并到 base（train 小节覆盖基础）
-        base.update(train_cfg)
-    # 覆盖模型配置
-    base_model_cfg = get_default_model_config()
-    base_model_cfg.update(model_overrides)
-    base['model_config'] = base_model_cfg
-    # 调用 default_factory 需要实例化一个临时 TrainingConfig 或直接重新创建默认字典
-    default_loss_weights = {
-        'pixel': 1.0,
-        'perceptual': 0.1,
-        'frequency': 0.0,
-        'vgg': 0.0,
-        'adversarial': 0.0,
-    }
-    default_loss_options = {'enable_anime_loss': False}
-    default_gan = {
-        'enabled': False,
-        'discriminator_lr': 1e-4,
-        'disc_update_ratio': 1,
-    }
-    base['loss_weights'] = {**default_loss_weights, **(loss_weights if yaml_path else {})}
-    base['loss_options'] = {**default_loss_options, **(loss_options if yaml_path else {})}
-    base['gan'] = {**default_gan, **(gan_cfg if yaml_path else {})}
-    if yaml_path and online_data_options_cfg:
-        base['online_data_options'] = online_data_options_cfg
+            raw_data = yaml.safe_load(f) or {}
+        if not isinstance(raw_data, dict):
+            raise ValueError('YAML 顶层结构必须是字典。')
 
-    # 规范 torch_compile 为布尔值开关
-    compile_flag = base.get('torch_compile', False)
-    if isinstance(compile_flag, str):
-        norm = compile_flag.strip().lower()
-        if norm in {'true', '1', 'yes', 'y'}:
-            compile_flag = True
-        elif norm in {'false', '0', 'no', 'n'}:
-            compile_flag = False
-    if not isinstance(compile_flag, bool):
+        train_cfg = raw_data.get('train')
+        if not isinstance(train_cfg, dict):
+            raise ValueError('YAML 中必须提供 train 字段，且类型为字典。')
+
+        # 检查 train 字段是否包含未定义的键
+        allowed_field_names = set(TrainingConfig.__dataclass_fields__.keys()) - {
+            'model_config',
+            'loss_weights',
+            'loss_options',
+            'gan',
+            'online_data_options',
+        }
+        unknown_train_keys = set(train_cfg.keys()) - allowed_field_names
+        if unknown_train_keys:
+            raise ValueError(f'train 段包含未知键: {", ".join(sorted(unknown_train_keys))}')
+
+        config_payload.update(train_cfg)
+
+        # 全局损失缩放（必须显式提供）
+        if 'loss_global_scale' not in raw_data:
+            raise ValueError('YAML 中必须提供 loss_global_scale 字段。')
+        try:
+            loss_global_scale = float(raw_data['loss_global_scale'])
+        except (TypeError, ValueError):
+            raise ValueError('loss_global_scale 必须是可转换为浮点数的数值。')
+        if loss_global_scale <= 0:
+            raise ValueError('loss_global_scale 必须大于 0。')
+        config_payload['loss_global_scale'] = loss_global_scale
+
+
+        # 模型配置
+        model_cfg = raw_data.get('model_config')
+        if model_cfg is None:
+            model_cfg = raw_data.get('model')
+        model_cfg = _ensure_required_dict('model_config', model_cfg)
+        required_model_keys = set(get_default_model_config().keys())
+        _validate_dict_keys('model_config', model_cfg, required_model_keys)
+        norm_layer_value = model_cfg.get('hat_norm_layer')
+        if isinstance(norm_layer_value, str):
+            norm_key = norm_layer_value.strip().lower()
+            norm_mapping = {
+                'layernorm': nn.LayerNorm,
+                'nn.layernorm': nn.LayerNorm,
+                'torch.nn.layernorm': nn.LayerNorm,
+            }
+            if norm_key not in norm_mapping:
+                raise ValueError('model_config.hat_norm_layer 字符串值无法识别，仅支持 LayerNorm。')
+            model_cfg['hat_norm_layer'] = norm_mapping[norm_key]
+        elif norm_layer_value is not None and not callable(norm_layer_value):
+            raise ValueError('model_config.hat_norm_layer 必须是可调用对象或受支持的字符串名称。')
+        config_payload['model_config'] = model_cfg
+
+        # 损失、GAN、在线数据等配置
+        loss_weights_cfg = _ensure_required_dict('loss_weights', raw_data.get('loss_weights'))
+        _validate_dict_keys('loss_weights', loss_weights_cfg, DEFAULT_LOSS_WEIGHTS.keys())
+        config_payload['loss_weights'] = loss_weights_cfg
+
+        loss_options_cfg = _ensure_required_dict('loss_options', raw_data.get('loss_options'))
+        _validate_dict_keys('loss_options', loss_options_cfg, DEFAULT_LOSS_OPTIONS.keys())
+        config_payload['loss_options'] = loss_options_cfg
+
+        gan_cfg = _ensure_required_dict('gan', raw_data.get('gan'))
+        _validate_dict_keys('gan', gan_cfg, DEFAULT_GAN_CFG.keys())
+        config_payload['gan'] = gan_cfg
+
+        online_data_cfg = _ensure_required_dict('online_data_options', raw_data.get('online_data_options'))
+        config_payload['online_data_options'] = online_data_cfg
+
+        metrics_cfg = raw_data.get('save_metrics')
+        if metrics_cfg is None:
+            raise ValueError('YAML 中必须提供 save_metrics 字段。')
+        if not isinstance(metrics_cfg, dict):
+            raise ValueError('save_metrics 必须是字典。')
+        _validate_dict_keys('save_metrics', metrics_cfg, SAVE_METRIC_KEYS)
+        for metric_key in SAVE_METRIC_KEYS:
+            metric_value = metrics_cfg[metric_key]
+            if not isinstance(metric_value, bool):
+                raise ValueError(f'save_metrics.{metric_key} 必须是布尔值。')
+            config_payload[f'save_on_{metric_key}'] = metric_value
+
+    else:
+        # 无 YAML：使用默认值，但要求必需路径参数显式提供
+        if not train_data_path:
+            raise ValueError('未提供 YAML 时必须显式传入 train_data_path。')
+        if not val_data_path:
+            raise ValueError('未提供 YAML 时必须显式传入 val_data_path。')
+        config_payload.update({
+            'model_config': get_default_model_config(),
+            'train_data_path': train_data_path,
+            'val_data_path': val_data_path,
+            'checkpoint_dir': checkpoint_dir or './checkpoints',
+            'loss_weights': dict(DEFAULT_LOSS_WEIGHTS),
+            'loss_options': dict(DEFAULT_LOSS_OPTIONS),
+            'gan': dict(DEFAULT_GAN_CFG),
+            'online_data_options': {},
+            'loss_global_scale': 1.0,
+        })
+
+    # 覆盖优先使用函数参数
+    if train_data_path is not None:
+        config_payload['train_data_path'] = train_data_path
+    if val_data_path is not None:
+        config_payload['val_data_path'] = val_data_path
+    if checkpoint_dir is not None:
+        config_payload['checkpoint_dir'] = checkpoint_dir
+
+    # 检查 dataclass 字段的完整性
+    required_fields = TrainingConfig.__dataclass_fields__
+    if yaml_mode:
+        missing_fields = [name for name in required_fields.keys() if name not in config_payload]
+        if missing_fields:
+            raise ValueError(f'配置缺少以下必须字段: {", ".join(missing_fields)}')
+
+    # 校验全局损失缩放
+    loss_global_scale_val = config_payload.get('loss_global_scale', 1.0)
+    try:
+        loss_global_scale_val = float(loss_global_scale_val)
+    except (TypeError, ValueError):
+        raise ValueError('loss_global_scale 必须是可转换为浮点数的数值。')
+    if loss_global_scale_val <= 0:
+        raise ValueError('loss_global_scale 必须大于 0。')
+    config_payload['loss_global_scale'] = loss_global_scale_val
+
+    # 校验 torch_compile 类型
+    if 'torch_compile' in config_payload and not isinstance(config_payload['torch_compile'], bool):
         raise ValueError('torch_compile 配置仅支持布尔值 true/false。')
-    base['torch_compile'] = compile_flag
 
-    # YAML 中可提供 save_metrics: {psnr: true, ssim: false, lpips: false, val_loss: false}
-    save_metrics_cfg = yaml_save_metrics
-    if isinstance(save_metrics_cfg, dict):
-        for k in ['psnr', 'ssim', 'lpips', 'val_loss']:
-            if k in save_metrics_cfg:
-                base[f'save_on_{k}'] = bool(save_metrics_cfg[k])
-    # 全部为 False 时，强制开启 psnr 作为兜底
-    if not any([base.get('save_on_psnr'), base.get('save_on_ssim'), base.get('save_on_lpips'), base.get('save_on_val_loss')]):
-        print('警告: 所有模型保存指标均为 False，已自动启用 psnr 作为兜底。')
-        base['save_on_psnr'] = True
+    # 校验保存指标至少有一个为 True
+    if yaml_mode:
+        if not any(config_payload[f'save_on_{metric}'] for metric in SAVE_METRIC_KEYS):
+            raise ValueError('save_metrics 至少需要启用一个保存指标。')
 
-    if not base.get('train_data_path'):
-        raise ValueError('train_data_path 未在参数或配置文件中提供。')
-    if not base.get('val_data_path'):
-        raise ValueError('val_data_path 未在参数或配置文件中提供。')
-    if not base.get('checkpoint_dir'):
-        base['checkpoint_dir'] = './checkpoints'
+    # 校验在线数据预加载策略
+    online_options = config_payload.get('online_data_options', {})
+    if not isinstance(online_options, dict):
+        raise ValueError('online_data_options 必须是字典。')
 
-    return TrainingConfig(**base)
+    preload_all = bool(config_payload.get('preload_all_images'))
+    use_online = bool(config_payload.get('use_online_data'))
+    if preload_all:
+        if not use_online:
+            raise ValueError('preload_all_images 为 True 时必须启用 use_online_data。')
+        preload_ram = online_options.get('preload_to_ram')
+        preload_shared = online_options.get('preload_to_shared')
+        if preload_ram is None and preload_shared is None:
+            raise ValueError('启用 preload_all_images 时必须在 online_data_options 中显式设置 preload_to_ram 或 preload_to_shared。')
+        if preload_ram is None:
+            preload_ram = False
+        if preload_shared is None:
+            preload_shared = False
+        if not isinstance(preload_ram, bool) or not isinstance(preload_shared, bool):
+            raise ValueError('preload_to_ram 与 preload_to_shared 必须是布尔值。')
+        if preload_ram and preload_shared:
+            raise ValueError('preload_to_ram 与 preload_to_shared 不能同时为 True。')
+        if not preload_ram and not preload_shared:
+            raise ValueError('至少需要启用 preload_to_ram 或 preload_to_shared 其中之一。')
+
+    # 核心路径字段检查
+    for path_key in ('train_data_path', 'val_data_path', 'checkpoint_dir'):
+        value = config_payload.get(path_key)
+        if not value:
+            raise ValueError(f'{path_key} 未在参数或配置文件中提供。')
+
+    return TrainingConfig(**config_payload)
 
 # 示例配置输出
 if __name__ == '__main__':

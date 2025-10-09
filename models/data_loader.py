@@ -109,6 +109,8 @@ def create_data_loaders(
     batch_size: int,
     num_workers: int = 4,
     pin_memory: bool = True,
+    prefetch_factor: Optional[int] = None,
+    persistent_workers: bool = False,
     train_csv: str = 'dataset_index.csv',
     val_csv: str = 'dataset_index.csv'
 ) -> Tuple[DataLoader, DataLoader]:
@@ -120,13 +122,23 @@ def create_data_loaders(
     val_dataset = SRDataset(data_path=val_data_path, csv_file=val_csv)
     
     # 创建数据加载器
+    dl_common_kwargs = {
+        'batch_size': batch_size,
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+    }
+    if num_workers > 0:
+        if prefetch_factor is not None:
+            dl_common_kwargs['prefetch_factor'] = max(1, int(prefetch_factor))
+        if persistent_workers:
+            dl_common_kwargs['persistent_workers'] = True
+    print('当前的数据集加载参数:', dl_common_kwargs)
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=True
+        drop_last=True,
+        preload_to_shared=True,
+        **dl_common_kwargs,
     )
     
     val_loader = DataLoader(
@@ -135,7 +147,14 @@ def create_data_loaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        drop_last=False
+        preload_to_shared=True,
+        drop_last=False,
+        **({
+            'prefetch_factor': max(1, int(prefetch_factor))
+        } if num_workers > 0 and prefetch_factor is not None else {}),
+        **({
+            'persistent_workers': True
+        } if num_workers > 0 and persistent_workers else {}),
     )
     
     return train_loader, val_loader
@@ -187,6 +206,8 @@ class OnTheFlyOptions:
     recursive: bool = True              # 是否递归扫描文件夹
     extensions: Tuple[str, ...] = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
     seed: Optional[int] = None          # 设定后可复现
+    preload_to_ram: bool = False        # 是否在初始化时把全部原始图读入内存（仅对在线数据集有效）
+    preload_to_shared: bool = True     # 是否将所有原始图像编码字节打包进共享内存（支持多 worker 不复制）
 
 
 class OnTheFlySRDataset(Dataset):
@@ -212,7 +233,98 @@ class OnTheFlySRDataset(Dataset):
         if self.opts.crop_size % self.opts.scale != 0:
             raise ValueError(f"crop_size 必须能被 scale 整除: {self.opts.crop_size} vs {self.opts.scale}")
         self.to_tensor = transforms.ToTensor()
+        # 传统列表方式（每 worker 复制）
+        self._preloaded: Optional[List[bytes]] = None  # 存放单个图片原始编码字节
+        # 共享内存方式（跨 worker 共享）
+        self._shared_bytes: Optional[torch.Tensor] = None   # uint8 扁平大 buffer
+        self._shared_offsets: Optional[torch.Tensor] = None # int64 offsets
+        self._shared_lengths: Optional[torch.Tensor] = None # int64 lengths
 
+        if self.opts.preload_to_ram and self.opts.preload_to_shared:
+            raise ValueError("不能同时启用 preload_to_ram 与 preload_to_shared，请二选一。")
+
+        if self.opts.preload_to_shared:
+            self._build_shared_preload()
+        elif self.opts.preload_to_ram:
+            self._build_list_preload()
+
+    # ---------------- 内存预加载实现 -----------------
+    def _build_list_preload(self):
+        print(f"[OnTheFlySRDataset] (list) 开始将所有原始图像数据加载到内存中...")
+        self._preloaded = []
+        total_size_bytes = 0
+        placeholder_img_bytes = b''
+        try:
+            buf = io.BytesIO()
+            Image.new('RGB', (self.opts.crop_size, self.opts.crop_size), (128,128,128)).save(buf, format='PNG')
+            placeholder_img_bytes = buf.getvalue()
+        except Exception as e:
+            print(f"[OnTheFlySRDataset] 无法创建占位符图像: {e}")
+        for p in self.files:
+            try:
+                with open(p, 'rb') as f:
+                    raw_data = f.read()
+                total_size_bytes += len(raw_data)
+                self._preloaded.append(raw_data)
+            except Exception as e:
+                print(f"[OnTheFlySRDataset] 预加载失败 {p}: {e}")
+                self._preloaded.append(placeholder_img_bytes)
+        unit = 'MB'
+        disp = total_size_bytes/1024**2
+        if total_size_bytes > 1024**3:
+            unit='GB'; disp=total_size_bytes/1024**3
+        print(f"[OnTheFlySRDataset] 预加载完成(list): {len(self._preloaded)} 张; 总大小 {disp:.2f} {unit}。 (注意: 多 worker 会复制)" )
+        if os.getenv('WORKER_ID'):
+            print("[OnTheFlySRDataset] 警告: 你正在 worker 内部构建 preload; 这意味着每个 worker 都有独立副本。建议在主进程创建数据集后再交给 DataLoader。")
+
+    def _build_shared_preload(self):
+        print(f"[OnTheFlySRDataset] (shared) 构建共享内存图像字节池 ...")
+        raw_list = []
+        lengths = []
+        total_size_bytes = 0
+        for p in self.files:
+            try:
+                with open(p, 'rb') as f:
+                    data = f.read()
+            except Exception as e:
+                print(f"[OnTheFlySRDataset] 读取失败 {p}: {e}; 使用空占位符")
+                data = b''
+            raw_list.append(data)
+            l = len(data)
+            lengths.append(l)
+            total_size_bytes += l
+        # 分配大 buffer
+        if total_size_bytes == 0:
+            raise RuntimeError("共享预加载失败: 所有文件读取为空。")
+        big = torch.empty(total_size_bytes, dtype=torch.uint8)
+        offsets = []
+        cursor = 0
+        for data in raw_list:
+            offsets.append(cursor)
+            if data:
+                try:
+                    src_arr = np.frombuffer(data, dtype=np.uint8)
+                    big[cursor:cursor+len(data)] = torch.from_numpy(src_arr)
+                except Exception as e:
+                    # 退化到逐字节拷贝（慢，但极少触发）
+                    print(f"[OnTheFlySRDataset] 警告: frombuffer 拷贝失败({e})，使用回退路径。")
+                    big[cursor:cursor+len(data)] = torch.tensor(list(data), dtype=torch.uint8)
+            cursor += len(data)
+        offsets_t = torch.tensor(offsets, dtype=torch.int64)
+        lengths_t = torch.tensor(lengths, dtype=torch.int64)
+        # 共享内存
+        big.share_memory_()
+        offsets_t.share_memory_()
+        lengths_t.share_memory_()
+        self._shared_bytes = big
+        self._shared_offsets = offsets_t
+        self._shared_lengths = lengths_t
+        unit = 'MB'; disp = total_size_bytes/1024**2
+        if total_size_bytes > 1024**3:
+            unit='GB'; disp=total_size_bytes/1024**3
+        print(f"[OnTheFlySRDataset] 共享字节池构建完成: {len(raw_list)} 张; 聚合大小 {disp:.2f} {unit}; buffer={total_size_bytes} bytes")
+        print("[OnTheFlySRDataset] 说明: 该模式在多 worker 下不再复制图像编码字节; 仅增加少量索引张量开销。")
+    
     def _scan_files(self) -> List[Path]:
         pattern = '**/*' if self.opts.recursive else '*'
         files = []
@@ -226,6 +338,33 @@ class OnTheFlySRDataset(Dataset):
 
     def _open_rgb(self, path: Path) -> Image.Image:
         return Image.open(path).convert('RGB')
+
+    def _get_image(self, idx: int) -> Image.Image:
+        # 共享内存优先
+        if self._shared_bytes is not None:
+            offset = int(self._shared_offsets[idx])
+            length = int(self._shared_lengths[idx])
+            if length == 0:
+                return Image.new('RGB', (self.opts.crop_size, self.opts.crop_size), (128,128,128))
+            # 1. 切片操作不复制数据，返回一个共享底层存储的视图
+            tensor_slice = self._shared_bytes[offset:offset+length]
+            
+            # 2. .numpy() 也不复制数据，返回一个共享内存的 numpy 数组
+            numpy_slice = tensor_slice.numpy()
+            
+            # 3. memoryview(numpy_slice) 创建一个内存视图，仍然不复制数据
+            # 4. io.BytesIO 可以直接消费 memoryview
+            image_buffer = io.BytesIO(memoryview(numpy_slice))
+            
+            return Image.open(image_buffer).convert('RGB')
+        if self._preloaded is not None:
+            raw_data = self._preloaded[idx]
+            if not raw_data:
+                return Image.new('RGB', (self.opts.crop_size, self.opts.crop_size), (128,128,128))
+            return Image.open(io.BytesIO(raw_data)).convert('RGB')
+        
+        # 保持原有从磁盘读取的逻辑
+        return self._open_rgb(self.files[idx])
 
     def _rand_crop_hr(self, img: Image.Image, crop_size: int) -> Image.Image:
         w, h = img.size
@@ -301,7 +440,7 @@ class OnTheFlySRDataset(Dataset):
         return lr_tensor
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        img = self._open_rgb(self.files[idx])
+        img = self._get_image(idx)
         hr = self._rand_crop_hr(img, self.opts.crop_size)
         hr = self._maybe_aug_hr(hr)
         lr = self._downsample_to_lr(hr)
@@ -319,6 +458,8 @@ def create_random_sr_loaders(
     batch_size: int,
     num_workers: int = 4,
     pin_memory: bool = True,
+    prefetch_factor: Optional[int] = None,
+    persistent_workers: bool = False,
     options: Optional[OnTheFlyOptions] = None,
 ) -> Tuple[DataLoader, Optional[DataLoader]]:
     """
@@ -328,25 +469,41 @@ def create_random_sr_loaders(
     """
 
     train_ds = OnTheFlySRDataset(train_image_dir, options=options, is_val=False)
+    train_loader_kwargs = {
+        'batch_size': batch_size,
+        'shuffle': True,
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+        'drop_last': True,
+    }
+    if num_workers > 0:
+        if prefetch_factor is not None:
+            train_loader_kwargs['prefetch_factor'] = max(1, int(prefetch_factor))
+        if persistent_workers:
+            train_loader_kwargs['persistent_workers'] = True
     train_loader = DataLoader(
         train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=True,
+        **train_loader_kwargs,
     )
 
     val_loader = None
     if val_image_dir:
         val_ds = OnTheFlySRDataset(val_image_dir, options=options, is_val=True)
+        val_loader_kwargs = {
+            'batch_size': batch_size,
+            'shuffle': False,
+            'num_workers': num_workers,
+            'pin_memory': pin_memory,
+            'drop_last': False,
+        }
+        if num_workers > 0:
+            if prefetch_factor is not None:
+                val_loader_kwargs['prefetch_factor'] = max(1, int(prefetch_factor))
+            if persistent_workers:
+                val_loader_kwargs['persistent_workers'] = True
         val_loader = DataLoader(
             val_ds,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
+            **val_loader_kwargs,
         )
     return train_loader, val_loader
 

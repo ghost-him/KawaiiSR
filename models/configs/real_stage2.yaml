@@ -2,12 +2,17 @@ train:
   device: cuda
   epochs: 10
   batch_size: 3
-  learning_rate: 1.5e-4
+  learning_rate: 2.0e-4
   mixed_precision: false
   gradient_clip_norm: 1.0
-  num_workers: 24
+  num_workers: 0
   pin_memory: true
   use_online_data: true
+  preload_all_images: true
+  dataloader_prefetch_factor: 8
+  dataloader_persistent_workers: true
+  enable_cuda_prefetch: true
+
   train_data_path: /DATA/LSDIR/data
   val_data_path: /DATA/LSDIR/vali
   val_every: 1
@@ -17,9 +22,11 @@ train:
   checkpoint_dir: ./models/checkpoints/real_stage2
   torch_compile: false
 
+loss_global_scale: 4
+
 loss_weights:
-  pixel: 0.9
-  frequency: 0.15
+  pixel: 1
+  frequency: 0.2
   perceptual: 0.0
   vgg: 0.03          # 使用VGG感知增强纹理
   adversarial: 0.0
@@ -29,7 +36,9 @@ loss_options:
 
 save_metrics:
   psnr: true
+  ssim: true
   lpips: true
+  val_loss : false
 
 gan:
   enabled: false
@@ -52,3 +61,33 @@ online_data_options:
   webp_p: 0.4
   webp_quality_min: 45
   webp_quality_max: 95
+  preload_to_ram: true
+  preload_to_shared: false
+
+
+model_config:
+  image_size: 64
+  in_channels: 3
+  image_range: 1.0
+  use_tiling: False
+  tile_size: 64
+  tile_pad: 32
+  hat_patch_size: 1
+  hat_body_hid_channels: 180
+  hat_upsampler_hid_channels: 64
+  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_window_size: 16
+  hat_compress_ratio: 3
+  hat_squeeze_factor: 30
+  hat_conv_scale: 0.01
+  hat_overlap_ratio: 0.5
+  hat_mlp_ratio: 2.0
+  hat_qkv_bias: True
+  hat_drop_rate: 0.0
+  hat_attn_drop_rate: 0.0
+  hat_drop_path_rate: 0.1
+  hat_norm_layer: 'nn.LayerNorm'
+  hat_patch_norm: true
+  hat_use_checkpoint: true
+  hat_resi_connection: '1conv'
