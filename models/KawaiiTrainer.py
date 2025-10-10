@@ -350,6 +350,23 @@ class KawaiiTrainer:
             self.logger.info(f"Checkpoint saved (epoch={epoch+1}, best={is_best}) in {dt:.2f}s")
         except Exception:
             self._console(f"[Console] Checkpoint saved in {dt:.2f}s")
+       
+        if self.gan_enabled and self.disc is not None and self.disc_opt is not None:
+            disc_weights_payload = {'model_state_dict': self.disc.state_dict()}
+            disc_state_payload = {'optimizer_state_dict': self.disc_opt.state_dict()}
+            
+            torch.save(disc_weights_payload, checkpoint_dir / 'disc_weight.pth')
+            torch.save(disc_state_payload, checkpoint_dir / 'disc_state.pth')
+
+        dt = time.perf_counter() - t0
+        log_msg = (
+            f"Checkpoint saved (epoch={epoch+1}, best={is_best}"
+            f"{' +Disc' if self.gan_enabled else ''}) in {dt:.2f}s"
+        )
+        try:
+            self.logger.info(log_msg)
+        except Exception:
+            self._console(f"[Console] {log_msg}")
 
     def train(
         self,
@@ -392,6 +409,28 @@ class KawaiiTrainer:
             start_epoch = int(resume_state_payload.get('epoch', -1)) + 1
             if start_epoch < 0:
                 start_epoch = 0
+            
+            if self.gan_enabled:
+                self._console("[Console] GAN已启用, 尝试从固定路径恢复判别器...")
+                checkpoint_dir = Path(self.cfg.checkpoint_dir)
+                disc_weights_path = checkpoint_dir / 'disc_weight.pth'
+                disc_state_path = checkpoint_dir / 'disc_state.pth'
+
+                if disc_weights_path.exists() and disc_state_path.exists():
+                    try:
+                        # 加载判别器权重
+                        disc_weights_payload = torch.load(disc_weights_path, map_location=self.device)
+                        self.disc.load_state_dict(disc_weights_payload['model_state_dict'])
+
+                        # 加载判别器优化器状态
+                        disc_state_payload = torch.load(disc_state_path, map_location=self.device)
+                        self.disc_opt.load_state_dict(disc_state_payload['optimizer_state_dict'])
+                        
+                        self._console("[Console] 成功从 disc_weight.pth 和 disc_state.pth 恢复判别器。")
+                    except Exception as e:
+                        self._console(f"[Console] 加载判别器检查点失败 ({e})，将使用新的判别器。")
+                else:
+                    self._console("[Console] 未找到判别器检查点，将使用新的判别器进行训练。")
 
         config_text = pformat(vars(self.cfg), indent=2, width=120)
         self._console('[Console] Active training config:\n' + config_text)
