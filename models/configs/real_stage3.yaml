@@ -2,16 +2,14 @@ train:
   device: cuda
   epochs: 30
   batch_size: 3
-  learning_rate: 1.0e-4
+  learning_rate: 0.0001
   mixed_precision: false
-  gradient_clip_norm: 1
+  gradient_clip_norm: 1.0
   num_workers: 24
   pin_memory: true
-  use_online_data: true
   dataloader_prefetch_factor: 4
   dataloader_persistent_workers: true
   enable_cuda_prefetch: true
-  preload_all_images: false
   allow_tf32: true
   
   train_data_path: /DATA/LSDIR/data
@@ -20,17 +18,18 @@ train:
   log_every: 100
   early_stopping_patience: 15
   checkpoint_dir: ./models/checkpoints/real_stage3
+  auto_resume: false
   torch_compile: false
 
 # 全局损失缩放：统一放大/缩小所有损失权重（保持相对比例不变），用于控制总体梯度规模
-loss_global_scale: 3
+loss_global_scale: 1.0
 
 loss_weights:
-  pixel: 1.2
+  pixel: 1.0
   frequency: 0.5
   perceptual: 0.0
-  vgg: 0.01
-  adversarial: 0.1   # 轻量GAN，稳定性优先
+  vgg: 0.02
+  adversarial: 0.01   # 轻量GAN，稳定性优先
 
 save_metrics:
   psnr: true
@@ -44,27 +43,25 @@ loss_options:
 
 gan:
   enabled: true
-  discriminator_lr: 1.0e-4
+  discriminator_lr: 0.00005
   disc_update_ratio: 1
 
 online_data_options:
   crop_size: 128        # 覆盖默认裁剪尺寸
   scale: 2              # 覆盖放大倍数，仍需能整除 crop_size
   downsample_filters: [nearest, bilinear, bicubic, lanczos]
-  noise_p: 0.2
+  noise_p: 0.1          # [修改] 降低噪声概率 (0.2 -> 0.1)，防止生成器养成"加噪"习惯，特别是为了后续动漫微调
   noise_std_min: 0.001
-  noise_std_max: 0.02
-  blur_p: 0.3
+  noise_std_max: 0.01   # [修改] 降低最大噪声强度 (0.02 -> 0.01)，动漫底模需要更干净
+  blur_p: 0.25          # 模糊是模拟线条发虚的关键，保持不变
   blur_sigma_min: 0.4
   blur_sigma_max: 1.5
-  jpeg_p: 0.3
-  jpeg_quality_min: 30
+  jpeg_p: 0.4           # [修改] 略微增加JPEG概率 (0.3 -> 0.4)，抗压缩能力对网络图片很重要
+  jpeg_quality_min: 50
   jpeg_quality_max: 95
   webp_p: 0.3
-  webp_quality_min: 30
+  webp_quality_min: 50
   webp_quality_max: 95
-  preload_to_ram: false
-  preload_to_shared: false
 
 model_config:
   image_size: 64

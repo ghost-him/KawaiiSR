@@ -4,6 +4,7 @@ import pywt
 import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as T
+import torch.nn.functional as F
 import numpy as np
 from io import BytesIO
 
@@ -139,7 +140,7 @@ def visualize_wavelet_transform(image_path):
     print(f"输入图像张量形状: {img_tensor.shape}")
 
     # --- 2. 执行小波变换 ---
-    DWT = WaveletTransform2D(wavelet="sym4")
+    DWT = WaveletTransform2D(wavelet="haar")
     # 禁止梯度计算，因为我们只做前向传播
     with torch.no_grad():
         LL, LH, HL, HH = DWT(img_tensor)
@@ -166,10 +167,11 @@ def visualize_wavelet_transform(image_path):
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
+    plt.savefig('my_plot.png')
 
 
 if __name__ == "__main__":
-    LOCAL_IMAGE_PATH = "./test.png" 
+    LOCAL_IMAGE_PATH = "/home/user/gz/gz/KawaiiSR/models/test.png" 
     
     print("运行小波变换可视化...")
     print("需要的库: torch, pywavelets, matplotlib, pillow, torchvision")

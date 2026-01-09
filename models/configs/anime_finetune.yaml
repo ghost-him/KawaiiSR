@@ -1,56 +1,90 @@
 train:
   device: cuda
-  epochs: 3
-  batch_size: 1
+  epochs: 50
+  batch_size: 2
   learning_rate: 5.0e-5
-  mixed_precision: true
-  gradient_clip_norm: 0.5
-  num_workers: 8
+  mixed_precision: false
+  gradient_clip_norm: 1.0
+  num_workers: 24
   pin_memory: true
-  use_online_data: false
-  train_data_path: /DATA/data/train
-  val_data_path: /DATA/data/vali
+  dataloader_prefetch_factor: 4
+  dataloader_persistent_workers: true
+  enable_cuda_prefetch: true
+  allow_tf32: true
+  
+  train_data_path: /DATA/LSDIR/data  # 用户需确认是否改为动漫数据集路径
+  val_data_path: /DATA/LSDIR/vali
   val_every: 1
   log_every: 100
-  early_stopping_patience: 10
-  tensorboard_dir: ./models/logs/anime_ft
-  checkpoint_dir: ./models/checkpoints/anime_ft
+  early_stopping_patience: 15
+  checkpoint_dir: ./models/checkpoints/anime_finetune
+  auto_resume: false
   torch_compile: false
 
-# 对动漫域，开启 AnimePerceptualLoss，并适度保留像素/频域与VGG
+loss_global_scale: 1.0
+
 loss_weights:
-  pixel: 0.4
-  frequency: 0.1
-  perceptual: 0.3   # 仅当 enable_anime_loss=true 时生效
-  vgg: 0.05
-  adversarial: 0.002
+  pixel: 1.0
+  frequency: 0.2
+  perceptual: 1.0
+  vgg: 0.0
+  adversarial: 0.05  # 微调时开启轻微对抗
 
 loss_options:
-  enable_anime_loss: true
+  enable_anime_loss: true # 开启针对动漫的Loss特性
 
 gan:
   enabled: true
-  discriminator_lr: 1.0e-4
+  discriminator_lr: 5.0e-5
   disc_update_ratio: 1
 
-# 可按需覆盖模型结构（示例保留默认）
-# model_config:
-#   use_tiling: false
-#   tile_size: 256
-#   tile_pad: 16
+save_metrics:
+  psnr: true
+  ssim: true
+  lpips: true
+  val_loss : false
+
 online_data_options:
-  crop_size: 128        # 覆盖默认裁剪尺寸
-  scale: 2              # 覆盖放大倍数，仍需能整除 crop_size
+  crop_size: 128
+  scale: 2
   downsample_filters: [nearest, bilinear, bicubic, lanczos]
-  noise_p: 0.2
+  noise_p: 0.1         # 动漫源通常比较干净，减少噪声增强
   noise_std_min: 0.001
-  noise_std_max: 0.02
-  blur_p: 0.3
+  noise_std_max: 0.01
+  blur_p: 0.1
   blur_sigma_min: 0.4
-  blur_sigma_max: 1.5
-  jpeg_p: 0.3
-  jpeg_quality_min: 40
+  blur_sigma_max: 1.0
+  jpeg_p: 0.1
+  jpeg_quality_min: 60
   jpeg_quality_max: 95
-  webp_p: 0.3
-  webp_quality_min: 45
+  webp_p: 0.1
+  webp_quality_min: 60
   webp_quality_max: 95
+
+
+model_config:
+  image_size: 64
+  in_channels: 3
+  image_range: 1.0
+  use_tiling: False
+  tile_size: 64
+  tile_pad: 32
+  hat_patch_size: 1
+  hat_body_hid_channels: 180
+  hat_upsampler_hid_channels: 64
+  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_window_size: 16
+  hat_compress_ratio: 3
+  hat_squeeze_factor: 30
+  hat_conv_scale: 0.01
+  hat_overlap_ratio: 0.5
+  hat_mlp_ratio: 2.0
+  hat_qkv_bias: True
+  hat_drop_rate: 0.0
+  hat_attn_drop_rate: 0.0
+  hat_drop_path_rate: 0.1
+  hat_norm_layer: 'nn.LayerNorm'
+  hat_patch_norm: true
+  hat_use_checkpoint: true
+  hat_resi_connection: '1conv'

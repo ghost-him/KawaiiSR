@@ -34,16 +34,12 @@ def main():
         print(f'配置文件不存在: {args.config}')
         sys.exit(1)
     # 构建配置
-    try:
-        cfg = create_training_config(
-            train_data_path=args.train_dir,
-            val_data_path=args.val_dir,
-            checkpoint_dir=args.ckpt_dir,
-            yaml_path=args.config,
-        )
-    except ValueError as exc:
-        print(f'配置错误: {exc}')
-        sys.exit(1)
+    cfg = create_training_config(
+        train_data_path=args.train_dir,
+        val_data_path=args.val_dir,
+        checkpoint_dir=args.ckpt_dir,
+        yaml_path=args.config,
+    )
 
     Path(cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
@@ -59,14 +55,37 @@ def main():
     torch.set_float32_matmul_precision('high')
     # 训练
     trainer = KawaiiTrainer(cfg)
-    try:
-        trainer.train(
-            load_weights=args.weights,
-            resume_weights=args.resume_weights,
-            resume_state=args.resume_state,
-        )
-    except ValueError as exc:
-        print(f'参数错误: {exc}')
-        sys.exit(1)
+
+    # 处理自动恢复 (auto_resume)
+    # 优先级: 命令行参数 > 配置文件 auto_resume
+    resume_weights_path = args.resume_weights
+    resume_state_path = args.resume_state
+
+    if not resume_weights_path and not resume_state_path:
+        # 如果命令行没有指定恢复参数，检查配置文件中的 auto_resume
+        if cfg.auto_resume:
+            ckpt_dir = Path(cfg.checkpoint_dir)
+            auto_weights = ckpt_dir / 'last_weights.pth'
+            auto_state = ckpt_dir / 'last_state.pth'
+
+            if auto_weights.exists() and auto_state.exists():
+                print(f'[Auto Resume] 发现上次的检查点，准备恢复训练: {auto_weights}')
+                resume_weights_path = str(auto_weights)
+                resume_state_path = str(auto_state)
+            else:
+                # 用户虽然启用了 auto_resume，但因为没有找到对应文件，可能意味着是首次训练。
+                # 但根据用户“配置有问题直接抛出异常”的严格要求，如果要从头开始，应该显式设置 auto_resume=False。
+                # 如果设置为 True 却找不到文件，抛出异常。
+                raise FileNotFoundError(
+                    f'[Auto Resume Error] 配置中启用了 auto_resume=True，但在 {ckpt_dir} 下未找到 last_weights.pth 或 last_state.pth。\n'
+                    f'如果是首次训练，请将 auto_resume 设置为 False。'
+                )
+
+    trainer.train(
+        load_weights=args.weights,
+        resume_weights=resume_weights_path,
+        resume_state=resume_state_path,
+    )
+
 if __name__ == '__main__':
     main()

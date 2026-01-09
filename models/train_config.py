@@ -14,61 +14,49 @@ class TrainingConfig:
     # 数据配置
     train_data_path: str
     val_data_path: str
-    num_workers: int = 4
-    pin_memory: bool = True
-    use_online_data: bool = False
-    online_data_options: Dict[str, Any] = field(default_factory=dict)
-    preload_all_images: bool = False  # 顶层快捷开关，若为 True 且使用在线数据，则强制 OnTheFly 预加载
-    dataloader_prefetch_factor: int = 2
-    dataloader_persistent_workers: bool = False
-    enable_cuda_prefetch: bool = False
-    allow_tf32: bool = True
+    num_workers: int
+    pin_memory: bool
+    # use_online_data 已移除
+    online_data_options: Dict[str, Any]
+    dataloader_prefetch_factor: int
+    dataloader_persistent_workers: bool
+    enable_cuda_prefetch: bool
+    allow_tf32: bool
 
     # 损失全局缩放
-    loss_global_scale: float = 1.0
+    loss_global_scale: float
 
     # 训练配置
-    device: str = 'cuda'
-    epochs: int = 100
-    batch_size: int = 16
-    learning_rate: float = 1e-4
-    mixed_precision: bool = False
-    gradient_clip_norm: float = 1.0
-    torch_compile: bool = False
+    device: str
+    epochs: int
+    batch_size: int
+    learning_rate: float
+    mixed_precision: bool
+    gradient_clip_norm: float
+    torch_compile: bool
     # 保存策略（多指标开关，true/false）。若全部为 False，则自动回退到 psnr。
-    save_on_psnr: bool = True
-    save_on_ssim: bool = False
-    save_on_lpips: bool = False
-    save_on_val_loss: bool = False
+    save_on_psnr: bool
+    save_on_ssim: bool
+    save_on_lpips: bool
+    save_on_val_loss: bool
 
     # 检查点/日志配置
-    checkpoint_dir: str = './checkpoints'
-    log_every: int = 100
+    checkpoint_dir: str
+    log_every: int
+    auto_resume: bool  # 如果为 True，训练前自动尝试从 checkpoint_dir 加载最后的状态
 
     # 验证/早停
-    val_every: int = 1
-    early_stopping_patience: int = 10
+    val_every: int
+    early_stopping_patience: int
 
     # 损失权重（固定，不做动态/阶段切换）
-    loss_weights: Dict[str, float] = field(default_factory=lambda: {
-        'pixel': 1.0,
-        'perceptual': 0.1,
-        'frequency': 0.0,
-        'vgg': 0.0,
-        'adversarial': 0.0,
-    })
+    loss_weights: Dict[str, float]
 
     # 额外损失/开关项
-    loss_options: Dict[str, Any] = field(default_factory=lambda: {
-        'enable_anime_loss': False
-    })
+    loss_options: Dict[str, Any]
 
     # GAN 配置（可选，默认关闭）
-    gan: Dict[str, Any] = field(default_factory=lambda: {
-        'enabled': False,
-        'discriminator_lr': 1e-4,
-        'disc_update_ratio': 1,
-    })
+    gan: Dict[str, Any]
 
 def get_default_model_config() -> Dict[str, Any]:
     """获取默认的模型配置"""
@@ -246,6 +234,29 @@ def create_training_config(
             'gan': dict(DEFAULT_GAN_CFG),
             'online_data_options': {},
             'loss_global_scale': 1.0,
+            
+            # 必需字段的默认回退值（用于无 YAML 模式的快速测试）
+            'num_workers': 4,
+            'pin_memory': True,
+            'dataloader_prefetch_factor': 2,
+            'dataloader_persistent_workers': False,
+            'enable_cuda_prefetch': False,
+            'allow_tf32': True,
+            'device': 'cuda',
+            'epochs': 100,
+            'batch_size': 16,
+            'learning_rate': 1e-4,
+            'mixed_precision': False,
+            'gradient_clip_norm': 1.0,
+            'torch_compile': False,
+            'save_on_psnr': True,
+            'save_on_ssim': False,
+            'save_on_lpips': False,
+            'save_on_val_loss': False,
+            'log_every': 100,
+            'auto_resume': False,
+            'val_every': 1,
+            'early_stopping_patience': 10,
         })
 
     # 覆盖优先使用函数参数
@@ -286,26 +297,6 @@ def create_training_config(
     online_options = config_payload.get('online_data_options', {})
     if not isinstance(online_options, dict):
         raise ValueError('online_data_options 必须是字典。')
-
-    preload_all = bool(config_payload.get('preload_all_images'))
-    use_online = bool(config_payload.get('use_online_data'))
-    if preload_all:
-        if not use_online:
-            raise ValueError('preload_all_images 为 True 时必须启用 use_online_data。')
-        preload_ram = online_options.get('preload_to_ram')
-        preload_shared = online_options.get('preload_to_shared')
-        if preload_ram is None and preload_shared is None:
-            raise ValueError('启用 preload_all_images 时必须在 online_data_options 中显式设置 preload_to_ram 或 preload_to_shared。')
-        if preload_ram is None:
-            preload_ram = False
-        if preload_shared is None:
-            preload_shared = False
-        if not isinstance(preload_ram, bool) or not isinstance(preload_shared, bool):
-            raise ValueError('preload_to_ram 与 preload_to_shared 必须是布尔值。')
-        if preload_ram and preload_shared:
-            raise ValueError('preload_to_ram 与 preload_to_shared 不能同时为 True。')
-        if not preload_ram and not preload_shared:
-            raise ValueError('至少需要启用 preload_to_ram 或 preload_to_shared 其中之一。')
 
     # 核心路径字段检查
     for path_key in ('train_data_path', 'val_data_path', 'checkpoint_dir'):

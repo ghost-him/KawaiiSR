@@ -7,22 +7,21 @@ train:
   gradient_clip_norm: 1.0
   num_workers: 24
   pin_memory: true
-  use_online_data: true
   dataloader_prefetch_factor: 4
   dataloader_persistent_workers: true
   enable_cuda_prefetch: true
   allow_tf32: true
-  preload_all_images: false  # 若为 true 且 use_online_data=true，则在线数据集初始化时把所有原图读入内存
+  
   train_data_path: /DATA/LSDIR/data
   val_data_path: /DATA/LSDIR/vali
   val_every: 1
   log_every: 100
   early_stopping_patience: 10
-  tensorboard_dir: ./models/logs/real_stage1
   checkpoint_dir: ./models/checkpoints/real_stage1
+  auto_resume: false
   torch_compile: false
 
-loss_global_scale: 4
+loss_global_scale: 4.0
 
 loss_weights:
   pixel: 1.0      # 仅像素/频域，稳定收敛
@@ -61,8 +60,6 @@ online_data_options:
   webp_p: 0.3
   webp_quality_min: 45
   webp_quality_max: 95
-  preload_to_ram: false
-  preload_to_shared: false
 
 
 model_config:

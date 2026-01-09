@@ -11,26 +11,24 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+
 try:
     from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-except Exception:
+except ImportError:
     LearnedPerceptualImagePatchSimilarity = None
+
 from tqdm import tqdm
 import time
 
 from train_config import TrainingConfig
 from data_loader import (
-    create_data_loaders,
     create_random_sr_loaders,
     OnTheFlyOptions,
 )
 from KawaiiSR.KawaiiSR import KawaiiSR
 from loss.KawaiiLoss import KawaiiLoss, DiscriminatorLoss
 
-try:
-    from Discriminator.UNetDiscriminatorSN import UNetDiscriminatorSN
-except Exception:
-    UNetDiscriminatorSN = None
+from Discriminator.UNetDiscriminatorSN import UNetDiscriminatorSN
 
 
 class _CUDAPrefetcher:
@@ -95,7 +93,7 @@ class KawaiiTrainer:
         self.device = torch.device(self.cfg.device if torch.cuda.is_available() or self.cfg.device == 'cpu' else 'cpu')
         if self.device.type == 'cuda':
             torch.backends.cudnn.benchmark = True
-            if getattr(self.cfg, 'allow_tf32', True):
+            if self.cfg.allow_tf32:
                 try:
                     torch.backends.cuda.matmul.allow_tf32 = True
                     torch.backends.cudnn.allow_tf32 = True
@@ -107,24 +105,24 @@ class KawaiiTrainer:
         self.model = KawaiiSR(**self.cfg.model_config).to(self.device)
         self._maybe_compile_model()
         # 支持全局损失缩放：在不改变各损失相对比例的情况下统一放大/缩小总梯度规模
-        self.loss_global_scale = float(getattr(self.cfg, 'loss_global_scale', 1.0))
+        self.loss_global_scale = float(self.cfg.loss_global_scale)
         if self.loss_global_scale <= 0:
             raise ValueError('loss_global_scale 必须大于 0。')
         self.loss_fn = KawaiiLoss(
-            lambda_char=self.cfg.loss_weights.get('pixel', 1.0) * self.loss_global_scale,
-            lambda_lap=self.cfg.loss_weights.get('frequency', 0.0) * self.loss_global_scale,
-            lambda_perc=self.cfg.loss_weights.get('perceptual', 0.0) * self.loss_global_scale,
-            lambda_adv=self.cfg.loss_weights.get('adversarial', 0.0) * self.loss_global_scale,
-            lambda_vgg=self.cfg.loss_weights.get('vgg', 0.0) * self.loss_global_scale,
-            enable_anime_loss=bool(self.cfg.loss_options.get('enable_anime_loss', False)),
+            lambda_char=self.cfg.loss_weights['pixel'] * self.loss_global_scale,
+            lambda_lap=self.cfg.loss_weights['frequency'] * self.loss_global_scale,
+            lambda_perc=self.cfg.loss_weights['perceptual'] * self.loss_global_scale,
+            lambda_adv=self.cfg.loss_weights['adversarial'] * self.loss_global_scale,
+            lambda_vgg=self.cfg.loss_weights['vgg'] * self.loss_global_scale,
+            enable_anime_loss=bool(self.cfg.loss_options['enable_anime_loss']),
             device=str(self.device)
         )
 
         # 可选判别器
-        self.gan_enabled = bool(self.cfg.gan.get('enabled', False) and self.cfg.loss_weights.get('adversarial', 0.0) > 0)
-        if self.gan_enabled and UNetDiscriminatorSN is not None:
+        self.gan_enabled = bool(self.cfg.gan['enabled'] and self.cfg.loss_weights['adversarial'] > 0)
+        if self.gan_enabled:
             self.disc = UNetDiscriminatorSN(num_in_ch=3, num_feat=64, skip_connection=True).to(self.device)
-            self.disc_opt = optim.AdamW(self.disc.parameters(), lr=float(self.cfg.gan.get('discriminator_lr', 1e-4)), betas=(0.5, 0.999))
+            self.disc_opt = optim.AdamW(self.disc.parameters(), lr=float(self.cfg.gan['discriminator_lr']), betas=(0.5, 0.999))
             # 使用统一的 Hinge 判别器损失实现，避免与 KawaiiLoss 中的生成器对抗项不一致
             self.disc_loss_fn = DiscriminatorLoss(device=str(self.device))
         else:
@@ -140,14 +138,11 @@ class KawaiiTrainer:
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.lpips = None
-        if getattr(self.cfg, 'save_on_lpips', False):
+        if self.cfg.save_on_lpips:
             if LearnedPerceptualImagePatchSimilarity is None:
                 raise RuntimeError('LPIPS 指标已启用，但当前环境缺少 torchmetrics.image.lpip.LearnedPerceptualImagePatchSimilarity。请安装/升级 torchmetrics 后再试。')
-            try:
-                self.lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(self.device)
-                self._console('[Console] LPIPS 指标已启用 (用于保存判断)。')
-            except Exception as exc:
-                raise RuntimeError(f'LPIPS 初始化失败: {exc}') from exc
+            self.lpips = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(self.device)
+            self._console('[Console] LPIPS 指标已启用 (用于保存判断)。')
 
         # 日志系统（文件旋转 + 控制台）
         self.logger = logging.getLogger(f'KawaiiTrainer[{id(self)}]')
@@ -170,9 +165,9 @@ class KawaiiTrainer:
         self._no_improve_validations = 0
 
         gan_status_bits = []
-        if not self.cfg.gan.get('enabled', False):
+        if not self.cfg.gan['enabled']:
             gan_status_bits.append('gan.enabled=false')
-        if self.cfg.loss_weights.get('adversarial', 0.0) <= 0:
+        if self.cfg.loss_weights['adversarial'] <= 0:
             gan_status_bits.append('adversarial weight<=0')
         if UNetDiscriminatorSN is None:
             gan_status_bits.append('UNetDiscriminatorSN import failed')
@@ -183,25 +178,19 @@ class KawaiiTrainer:
             self._console(f'[Console] GAN path disabled ({reason}).')
 
     def _console(self, message: str):
-        try:
-            tqdm.write(message)
-        except Exception:
-            print(message)
+        tqdm.write(message)
 
     def _maybe_compile_model(self):
-        compile_enabled = bool(getattr(self.cfg, 'torch_compile', False))
+        compile_enabled = bool(self.cfg.torch_compile)
         if not compile_enabled:
             self._console('[Console] torch.compile 未启用（配置为 false）。')
             return
         if not hasattr(torch, 'compile'):
-            self._console('[Console] 当前 PyTorch 版本不支持 torch.compile，保持 eager 模式。')
-            return
-
-        try:
-            self.model = torch.compile(self.model)
-            self._console('[Console] torch.compile 已启用，生成器将以编译模式训练。')
-        except Exception as exc:
-            self._console(f'[Console] torch.compile 失败 ({exc})，已回退至 eager 模式。')
+            if hasattr(torch, 'compile'):
+                self.model = torch.compile(self.model)
+                self._console('[Console] torch.compile 已启用，生成器将以编译模式训练。')
+            else:
+                self._console('[Console] 当前 PyTorch 版本不支持 torch.compile，保持 eager 模式。')
 
     def _init_scheduler(self, total_steps: int) -> None:
         """按 batch 建立余弦退火调度器。"""
@@ -215,7 +204,7 @@ class KawaiiTrainer:
         )
 
     def _wrap_loader(self, loader):
-        if getattr(self.cfg, 'enable_cuda_prefetch', False) and self.device.type == 'cuda':
+        if self.cfg.enable_cuda_prefetch and self.device.type == 'cuda':
             return _CUDAPrefetcher(loader, device=self.device)
         return loader
 
@@ -259,10 +248,7 @@ class KawaiiTrainer:
             'mse': mse.item(),
         }
         if self.lpips is not None:
-            try:
-                lp = self.lpips(sr01, hr01).item()
-            except Exception:
-                lp = float('nan')
+            lp = self.lpips(sr01, hr01).item()
             metrics['lpips'] = lp
         return metrics
 
@@ -273,16 +259,16 @@ class KawaiiTrainer:
           - LPIPS / val_loss: 变小
         """
         improved_flags = []
-        if getattr(self.cfg, 'save_on_psnr', True):
+        if self.cfg.save_on_psnr:
             if current['psnr'] > best.get('psnr', float('-inf')):
                 improved_flags.append('psnr')
-        if getattr(self.cfg, 'save_on_ssim', False):
+        if self.cfg.save_on_ssim:
             if current['ssim'] > best.get('ssim', float('-inf')):
                 improved_flags.append('ssim')
-        if getattr(self.cfg, 'save_on_val_loss', False):
+        if self.cfg.save_on_val_loss:
             if current['loss'] < best.get('loss', float('inf')):
                 improved_flags.append('val_loss')
-        if getattr(self.cfg, 'save_on_lpips', False) and 'lpips' in current and current['lpips'] is not None:
+        if self.cfg.save_on_lpips and 'lpips' in current and current['lpips'] is not None:
             prev = best.get('lpips', float('inf'))
             if current['lpips'] < prev:
                 improved_flags.append('lpips')
@@ -302,7 +288,7 @@ class KawaiiTrainer:
         if self.disc_loss_fn is not None:
             loss_d = self.disc_loss_fn(real_logits, fake_logits)
         else:
-            panic("Discriminator loss function not defined.")
+            raise RuntimeError("Discriminator loss function not defined.")
         loss_d.backward()
         self.disc_opt.step()
         return float(loss_d.item())
@@ -346,10 +332,7 @@ class KawaiiTrainer:
             torch.save(weights_payload, checkpoint_dir / 'best_weights.pth')
             torch.save(state_payload, checkpoint_dir / 'best_state.pth')
         dt = time.perf_counter() - t0
-        try:
-            self.logger.info(f"Checkpoint saved (epoch={epoch+1}, best={is_best}) in {dt:.2f}s")
-        except Exception:
-            self._console(f"[Console] Checkpoint saved in {dt:.2f}s")
+        self.logger.info(f"Checkpoint saved (epoch={epoch+1}, best={is_best}) in {dt:.2f}s")
        
         if self.gan_enabled and self.disc is not None and self.disc_opt is not None:
             disc_weights_payload = {'model_state_dict': self.disc.state_dict()}
@@ -363,10 +346,7 @@ class KawaiiTrainer:
             f"Checkpoint saved (epoch={epoch+1}, best={is_best}"
             f"{' +Disc' if self.gan_enabled else ''}) in {dt:.2f}s"
         )
-        try:
-            self.logger.info(log_msg)
-        except Exception:
-            self._console(f"[Console] {log_msg}")
+        self.logger.info(log_msg)
 
     def train(
         self,
@@ -417,18 +397,15 @@ class KawaiiTrainer:
                 disc_state_path = checkpoint_dir / 'disc_state.pth'
 
                 if disc_weights_path.exists() and disc_state_path.exists():
-                    try:
-                        # 加载判别器权重
-                        disc_weights_payload = torch.load(disc_weights_path, map_location=self.device)
-                        self.disc.load_state_dict(disc_weights_payload['model_state_dict'])
+                    # 加载判别器权重
+                    disc_weights_payload = torch.load(disc_weights_path, map_location=self.device)
+                    self.disc.load_state_dict(disc_weights_payload['model_state_dict'])
 
-                        # 加载判别器优化器状态
-                        disc_state_payload = torch.load(disc_state_path, map_location=self.device)
-                        self.disc_opt.load_state_dict(disc_state_payload['optimizer_state_dict'])
-                        
-                        self._console("[Console] 成功从 disc_weight.pth 和 disc_state.pth 恢复判别器。")
-                    except Exception as e:
-                        self._console(f"[Console] 加载判别器检查点失败 ({e})，将使用新的判别器。")
+                    # 加载判别器优化器状态
+                    disc_state_payload = torch.load(disc_state_path, map_location=self.device)
+                    self.disc_opt.load_state_dict(disc_state_payload['optimizer_state_dict'])
+                    
+                    self._console("[Console] 成功从 disc_weight.pth 和 disc_state.pth 恢复判别器。")
                 else:
                     self._console("[Console] 未找到判别器检查点，将使用新的判别器进行训练。")
 
@@ -437,38 +414,20 @@ class KawaiiTrainer:
         self.logger.info('Active training config:\n%s', config_text)
 
         # 数据
-        if self.cfg.use_online_data:
-            options_kwargs = dict(self.cfg.online_data_options or {})
-            try:
-                options = OnTheFlyOptions(**options_kwargs)
-            except TypeError as exc:
-                self._console(f"[Console] online_data_options 参数错误 {exc}，使用默认设置。")
-                options = OnTheFlyOptions()
+        options_kwargs = dict(self.cfg.online_data_options or {})
+        options = OnTheFlyOptions(**options_kwargs)
 
-            train_loader, val_loader = create_random_sr_loaders(
-                train_image_dir=self.cfg.train_data_path,
-                val_image_dir=self.cfg.val_data_path,
-                batch_size=self.cfg.batch_size,
-                num_workers=self.cfg.num_workers,
-                pin_memory=self.cfg.pin_memory,
-                prefetch_factor=self.cfg.dataloader_prefetch_factor,
-                persistent_workers=self.cfg.dataloader_persistent_workers,
-                options=options,
-            )
-            pipeline_mode = 'online'
-        else:
-            train_loader, val_loader = create_data_loaders(
-                train_data_path=self.cfg.train_data_path,
-                val_data_path=self.cfg.val_data_path,
-                batch_size=self.cfg.batch_size,
-                num_workers=self.cfg.num_workers,
-                pin_memory=self.cfg.pin_memory,
-                prefetch_factor=self.cfg.dataloader_prefetch_factor,
-                persistent_workers=self.cfg.dataloader_persistent_workers,
-                train_csv='dataset_index.csv',
-                val_csv='dataset_index.csv',
-            )
-            pipeline_mode = 'offline'
+        train_loader, val_loader = create_random_sr_loaders(
+            train_image_dir=self.cfg.train_data_path,
+            val_image_dir=self.cfg.val_data_path,
+            batch_size=self.cfg.batch_size,
+            num_workers=self.cfg.num_workers,
+            pin_memory=self.cfg.pin_memory,
+            prefetch_factor=self.cfg.dataloader_prefetch_factor,
+            persistent_workers=self.cfg.dataloader_persistent_workers,
+            options=options,
+        )
+        pipeline_mode = 'online'
 
         has_validation = val_loader is not None
         val_size = len(val_loader.dataset) if has_validation else 0
@@ -476,10 +435,7 @@ class KawaiiTrainer:
             f"[Console] Dataset summary | mode: {pipeline_mode} | train: {len(train_loader.dataset)} | val: {val_size} | batch: {self.cfg.batch_size}"
         )
 
-        try:
-            steps_per_epoch = len(train_loader)
-        except TypeError as exc:
-            raise RuntimeError('训练 DataLoader 未实现 __len__，无法按 batch 调整学习率。') from exc
+        steps_per_epoch = len(train_loader)
         if steps_per_epoch <= 0:
             raise RuntimeError('训练 DataLoader 未包含任何 batch。')
 
@@ -496,7 +452,7 @@ class KawaiiTrainer:
         if not self.best_metrics:
             self.best_metrics = {}
         # 读取早停耐心值（<=0 视为关闭早停）
-        patience = int(getattr(self.cfg, 'early_stopping_patience', 0) or 0)
+        patience = int(self.cfg.early_stopping_patience)
 
         if start_epoch >= self.cfg.epochs:
             self._console('[Console] 起始 epoch 已达到或超过配置上限，训练直接结束。')
@@ -599,7 +555,7 @@ class KawaiiTrainer:
                     if name == 'total_g_loss':
                         continue  # 跳过总和字段
                     # 与实际训练一致：显示值也乘以全局缩放系数
-                    weight = float(self.cfg.loss_weights.get(name, 0.0)) * self.loss_global_scale
+                    weight = float(self.cfg.loss_weights[name]) * self.loss_global_scale
                     if weight <= 0:
                         continue  # 未启用
                     try:

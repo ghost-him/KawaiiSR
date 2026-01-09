@@ -1,33 +1,90 @@
-# Quick validation config: 5 epochs, small batch, CPU/GPU auto
 train:
-  device: cuda # 若无GPU会在代码中回退到CPU
-  epochs: 5
-  batch_size: 1
-  learning_rate: 1.0e-4
+  device: cuda
+  epochs: 1
+  batch_size: 2
+  learning_rate: 2.0e-4
   mixed_precision: false
   gradient_clip_norm: 1.0
-  num_workers: 8
+  num_workers: 4
   pin_memory: true
-  use_online_data: false
-  train_data_path: ./models/data/train
-  val_data_path: ./models/data/validation
+  dataloader_prefetch_factor: 2
+  dataloader_persistent_workers: false
+  enable_cuda_prefetch: false
+  allow_tf32: true
+  
+  train_data_path: /DATA/LSDIR/data
+  val_data_path: /DATA/LSDIR/vali
   val_every: 1
-  log_every: 20
-  early_stopping_patience: 100 # 短跑验证，基本不触发早停
-  tensorboard_dir: ./models/logs/quick
+  log_every: 5
+  early_stopping_patience: 1
   checkpoint_dir: ./models/checkpoints/quick
+  auto_resume: false
   torch_compile: false
 
-# 固定损失权重（不随阶段变化）
+loss_global_scale: 1.0
+
 loss_weights:
   pixel: 1.0
-  perceptual: 0.5
-  frequency: 0.3
-  vgg: 0.2
-  adversarial: 0.0 # 关闭GAN以快速验证
+  frequency: 0.0
+  perceptual: 0.0
+  vgg: 0.0
+  adversarial: 0.0
 
-# GAN相关（快速验证关闭）
+loss_options:
+  enable_anime_loss: false
+
 gan:
   enabled: false
   discriminator_lr: 1.0e-4
   disc_update_ratio: 1
+
+save_metrics:
+  psnr: true
+  ssim: false
+  lpips: false
+  val_loss : true
+
+online_data_options:
+  crop_size: 64         # 小尺寸快速跑通
+  scale: 2
+  downsample_filters: [bilinear]
+  noise_p: 0.0
+  noise_std_min: 0.0
+  noise_std_max: 0.0
+  blur_p: 0.0
+  blur_sigma_min: 0.0
+  blur_sigma_max: 0.0
+  jpeg_p: 0.0
+  jpeg_quality_min: 100
+  jpeg_quality_max: 100
+  webp_p: 0.0
+  webp_quality_min: 100
+  webp_quality_max: 100
+
+
+model_config:
+  image_size: 32     # 匹配 crop_size / scale
+  in_channels: 3
+  image_range: 1.0
+  use_tiling: False
+  tile_size: 64
+  tile_pad: 32
+  hat_patch_size: 1
+  hat_body_hid_channels: 180
+  hat_upsampler_hid_channels: 64
+  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_window_size: 16
+  hat_compress_ratio: 3
+  hat_squeeze_factor: 30
+  hat_conv_scale: 0.01
+  hat_overlap_ratio: 0.5
+  hat_mlp_ratio: 2.0
+  hat_qkv_bias: True
+  hat_drop_rate: 0.0
+  hat_attn_drop_rate: 0.0
+  hat_drop_path_rate: 0.1
+  hat_norm_layer: 'nn.LayerNorm'
+  hat_patch_norm: true
+  hat_use_checkpoint: true
+  hat_resi_connection: '1conv'

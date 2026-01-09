@@ -1,38 +1,42 @@
 train:
   device: cuda
-  epochs: 10
+  epochs: 30
   batch_size: 3
-  learning_rate: 2.0e-4
+  learning_rate: 1.0e-4   # 降低学习率，微调
   mixed_precision: false
   gradient_clip_norm: 1.0
-  num_workers: 0
+  num_workers: 24
   pin_memory: true
-  use_online_data: true
-  preload_all_images: true
-  dataloader_prefetch_factor: 8
+  dataloader_prefetch_factor: 4
   dataloader_persistent_workers: true
   enable_cuda_prefetch: true
-
+  allow_tf32: true
+  
   train_data_path: /DATA/LSDIR/data
   val_data_path: /DATA/LSDIR/vali
   val_every: 1
   log_every: 100
-  early_stopping_patience: 12
-  tensorboard_dir: ./models/logs/real_stage2
+  early_stopping_patience: 10
   checkpoint_dir: ./models/checkpoints/real_stage2
+  auto_resume: false
   torch_compile: false
 
-loss_global_scale: 4
+loss_global_scale: 1.0    # 恢复标准尺度
 
 loss_weights:
-  pixel: 1
-  frequency: 0.2
-  perceptual: 0.0
-  vgg: 0.03          # 使用VGG感知增强纹理
+  pixel: 1.0      
+  frequency: 0.2  
+  perceptual: 1.0 # 开启感官损失
+  vgg: 0.0        # 可选，这里选 perceptual (LPIPS) 优先
   adversarial: 0.0
 
 loss_options:
   enable_anime_loss: false
+
+gan:
+  enabled: false
+  discriminator_lr: 1.0e-4
+  disc_update_ratio: 1
 
 save_metrics:
   psnr: true
@@ -40,29 +44,22 @@ save_metrics:
   lpips: true
   val_loss : false
 
-gan:
-  enabled: false
-  discriminator_lr: 1.0e-4
-  disc_update_ratio: 1
-
 online_data_options:
-  crop_size: 128        # 覆盖默认裁剪尺寸
-  scale: 2              # 覆盖放大倍数，仍需能整除 crop_size
+  crop_size: 128
+  scale: 2
   downsample_filters: [nearest, bilinear, bicubic, lanczos]
   noise_p: 0.2
   noise_std_min: 0.001
   noise_std_max: 0.03
-  blur_p: 0.3
+  blur_p: 0.2
   blur_sigma_min: 0.4
   blur_sigma_max: 1.5
-  jpeg_p: 0.4
+  jpeg_p: 0.3
   jpeg_quality_min: 40
   jpeg_quality_max: 95
-  webp_p: 0.4
+  webp_p: 0.3
   webp_quality_min: 45
   webp_quality_max: 95
-  preload_to_ram: true
-  preload_to_shared: false
 
 
 model_config:
