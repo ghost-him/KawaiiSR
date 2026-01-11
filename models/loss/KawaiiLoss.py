@@ -12,38 +12,35 @@ class KawaiiLoss(nn.Module):
     用于超分辨率生成器的综合损失函数。
     
     Args:
-
-        lambda_char (float): Charbonnier损失的权重。
-        lambda_lap (float): Laplacian损失的权重。
-        lambda_vgg (float): VGG损失的权重
-        lambda_perc (float): 感知损失的权重。
-        lambda_adv (float): 对抗性损失的权重。
-
+        lambda_pixel (float): 像素级损失的权重 (使用 CharbonnierLoss)。
+        lambda_frequency (float): 频域级损失的权重（如 Laplacian）。
+        lambda_vgg (float): VGG损失的权重。
+        lambda_perceptual (float): 感知损失的权重。
+        lambda_adversarial (float): 对抗性损失的权重。
+        enable_anime_loss (bool): 是否启用动漫特化感知损失。
         device (str): 计算设备。
     """
     def __init__(self, 
-                 lambda_char: float = 1.0,
-                 lambda_lap: float = 1.0,
-                 lambda_perc: float = 1.0,
-                 lambda_adv: float = 0.005,
+                 lambda_pixel: float = 1.0,
+                 lambda_frequency: float = 1.0,
+                 lambda_perceptual: float = 1.0,
+                 lambda_adversarial: float = 0.005,
                  lambda_vgg: float = 1.0,
-
                  enable_anime_loss: bool = False,
                  device: str = 'cuda'):
         super().__init__()
         
-        self.lambda_char = lambda_char
-        self.lambda_lap = lambda_lap
-        self.lambda_perc = lambda_perc
-        self.lambda_adv = lambda_adv
-
+        self.lambda_pixel = lambda_pixel
+        self.lambda_frequency = lambda_frequency
+        self.lambda_perceptual = lambda_perceptual
+        self.lambda_adversarial = lambda_adversarial
         self.lambda_vgg = lambda_vgg
 
         # 1. 像素级损失
-        self.char_loss = CharbonnierLoss().to(device)
+        self.pixel_loss = CharbonnierLoss().to(device)
         
         # 2. 频域损失
-        self.lap_loss = LaplacianLoss().to(device)
+        self.frequency_loss = LaplacianLoss().to(device)
 
         # 3. 感知损失 (动漫特化)
         self.perc_loss = None
@@ -57,9 +54,7 @@ class KawaiiLoss(nn.Module):
         # 4. 对抗性损失
         self.adv_loss = HingeGeneratorLoss().to(device)
 
-
-
-        # 6. vgg损失
+        # 5. vgg损失
         layer_weights = {'conv1_2': 0.1, 'conv2_2': 0.1, 'conv3_4': 1, 'conv4_4': 1, 'conv5_4': 1}
         vgg_type = 'vgg19'
         
@@ -88,29 +83,31 @@ class KawaiiLoss(nn.Module):
         loss_components = {}
         total_loss = 0
         
-        # 计算并累加各项损失（统一键名）
-        if self.lambda_char > 0:
-            loss_char = self.char_loss(sr_img, hr_img)
-            loss_components['pixel'] = loss_char.item()
-            total_loss += self.lambda_char * loss_char
+        # 1. 像素损失
+        if self.lambda_pixel > 0:
+            loss_p = self.pixel_loss(sr_img, hr_img)
+            loss_components['pixel'] = loss_p.item()
+            total_loss += self.lambda_pixel * loss_p
         
-        if self.lambda_lap > 0:
-            loss_lap = self.lap_loss(sr_img, hr_img)
-            loss_components['frequency'] = loss_lap.item()
-            total_loss += self.lambda_lap * loss_lap
+        # 2. 频域损失
+        if self.lambda_frequency > 0:
+            loss_f = self.frequency_loss(sr_img, hr_img)
+            loss_components['frequency'] = loss_f.item()
+            total_loss += self.lambda_frequency * loss_f
 
-        if self.lambda_perc > 0 and self.perc_loss is not None:
+        # 3. 感知损失
+        if self.lambda_perceptual > 0 and self.perc_loss is not None:
             loss_perc = self.perc_loss(sr_img, hr_img)
             loss_components['perceptual'] = loss_perc.item()
-            total_loss += self.lambda_perc * loss_perc
+            total_loss += self.lambda_perceptual * loss_perc
 
-        if self.lambda_adv > 0:
+        # 4. 对抗损失
+        if self.lambda_adversarial > 0:
             loss_adv = self.adv_loss(fake_logits)
             loss_components['adversarial'] = loss_adv.item()
-            total_loss += self.lambda_adv * loss_adv
-        
-
+            total_loss += self.lambda_adversarial * loss_adv
             
+        # 5. VGG损失
         if self.lambda_vgg > 0:
             loss_vgg = self.vgg_loss(sr_img, hr_img)
             loss_components['vgg'] = loss_vgg.item()
@@ -119,7 +116,6 @@ class KawaiiLoss(nn.Module):
         loss_components['total_g_loss'] = total_loss.item()
 
         return total_loss, loss_components
-
 
 class DiscriminatorLoss(nn.Module):
     """

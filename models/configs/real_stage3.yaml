@@ -50,14 +50,14 @@ online_data_options:
   crop_size: 128        # 覆盖默认裁剪尺寸
   scale: 2              # 覆盖放大倍数，仍需能整除 crop_size
   downsample_filters: [nearest, bilinear, bicubic, lanczos]
-  noise_p: 0.1          # [修改] 降低噪声概率 (0.2 -> 0.1)，防止生成器养成"加噪"习惯，特别是为了后续动漫微调
+  noise_p: 0.1          # [降低] 动漫不需要太强的去噪能力
   noise_std_min: 0.001
-  noise_std_max: 0.01   # [修改] 降低最大噪声强度 (0.02 -> 0.01)，动漫底模需要更干净
-  blur_p: 0.25          # 模糊是模拟线条发虚的关键，保持不变
+  noise_std_max: 0.015  # [降低]
+  blur_p: 0.2           # [适中]
   blur_sigma_min: 0.4
   blur_sigma_max: 1.5
-  jpeg_p: 0.4           # [修改] 略微增加JPEG概率 (0.3 -> 0.4)，抗压缩能力对网络图片很重要
-  jpeg_quality_min: 50
+  jpeg_p: 0.5           # [增加] 重点针对 JPEG 文物
+  jpeg_quality_min: 30  # [增加难度] 模拟更烂的画质
   jpeg_quality_max: 95
   webp_p: 0.3
   webp_quality_min: 50
@@ -70,22 +70,16 @@ model_config:
   use_tiling: False
   tile_size: 64
   tile_pad: 32
-  hat_patch_size: 1
-  hat_body_hid_channels: 180
-  hat_upsampler_hid_channels: 64
-  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-  hat_window_size: 16
-  hat_compress_ratio: 3
-  hat_squeeze_factor: 30
-  hat_conv_scale: 0.01
-  hat_overlap_ratio: 0.5
-  hat_mlp_ratio: 2.0
-  hat_qkv_bias: True
-  hat_drop_rate: 0.0
-  hat_attn_drop_rate: 0.0
-  hat_drop_path_rate: 0.1
-  hat_norm_layer: 'nn.LayerNorm'
-  hat_patch_norm: true
-  hat_use_checkpoint: true
-  hat_resi_connection: '1conv'
+  # MambaIRv2 SR2-L settings
+  upscale: 2
+  embed_dim: 174
+  d_state: 16
+  depths: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  window_size: 16
+  inner_rank: 64
+  num_tokens: 128
+  convffn_kernel_size: 5
+  mlp_ratio: 2.0
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'

@@ -67,25 +67,19 @@ def get_default_model_config() -> Dict[str, Any]:
         'use_tiling': False,
         'tile_size': 64,
         'tile_pad': 32,
-        'hat_patch_size': 1,
-        'hat_body_hid_channels': 180,
-        'hat_upsampler_hid_channels': 64,
-        'hat_depths': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
-        'hat_num_heads': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
-        'hat_window_size': 16,
-        'hat_compress_ratio': 3,
-        'hat_squeeze_factor': 30,
-        'hat_conv_scale': 0.01,
-        'hat_overlap_ratio': 0.5,
-        'hat_mlp_ratio': 2.0,
-        'hat_qkv_bias': True,
-        'hat_drop_rate': 0.0,
-        'hat_attn_drop_rate': 0.0,
-        'hat_drop_path_rate': 0.1,
-        'hat_norm_layer': nn.LayerNorm,
-        'hat_patch_norm': True,
-        'hat_use_checkpoint': False,
-        'hat_resi_connection': '1conv'
+        # MambaIRv2 defaults
+        'upscale': 2,
+        'embed_dim': 174,
+        'd_state': 16,
+        'depths': (6, 6, 6, 6, 6, 6, 6, 6, 6),
+        'num_heads': (6, 6, 6, 6, 6, 6, 6, 6, 6),
+        'window_size': 16,
+        'inner_rank': 64,
+        'num_tokens': 128,
+        'convffn_kernel_size': 5,
+        'mlp_ratio': 2.0,
+        'upsampler': 'pixelshuffle',
+        'resi_connection': '1conv'
     }
 
 DEFAULT_LOSS_WEIGHTS = {
@@ -96,7 +90,9 @@ DEFAULT_LOSS_WEIGHTS = {
     'adversarial': 0.0,
 }
 
-DEFAULT_LOSS_OPTIONS = {'enable_anime_loss': False}
+DEFAULT_LOSS_OPTIONS = {
+    'enable_anime_loss': False,
+}
 
 DEFAULT_GAN_CFG = {
     'enabled': False,
@@ -173,21 +169,11 @@ def create_training_config(
         if model_cfg is None:
             model_cfg = raw_data.get('model')
         model_cfg = _ensure_required_dict('model_config', model_cfg)
-        required_model_keys = set(get_default_model_config().keys())
-        _validate_dict_keys('model_config', model_cfg, required_model_keys)
-        norm_layer_value = model_cfg.get('hat_norm_layer')
-        if isinstance(norm_layer_value, str):
-            norm_key = norm_layer_value.strip().lower()
-            norm_mapping = {
-                'layernorm': nn.LayerNorm,
-                'nn.layernorm': nn.LayerNorm,
-                'torch.nn.layernorm': nn.LayerNorm,
-            }
-            if norm_key not in norm_mapping:
-                raise ValueError('model_config.hat_norm_layer 字符串值无法识别，仅支持 LayerNorm。')
-            model_cfg['hat_norm_layer'] = norm_mapping[norm_key]
-        elif norm_layer_value is not None and not callable(norm_layer_value):
-            raise ValueError('model_config.hat_norm_layer 必须是可调用对象或受支持的字符串名称。')
+        # Relax required keys check to allow new keys from YAML
+        # required_model_keys = set(get_default_model_config().keys())
+        # _validate_dict_keys('model_config', model_cfg, required_model_keys)
+        
+        # Norm layer parsing removed for MambaIRv2 as it uses default nn.LayerNorm
         config_payload['model_config'] = model_cfg
 
         # 损失、GAN、在线数据等配置

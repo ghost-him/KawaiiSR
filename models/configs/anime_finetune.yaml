@@ -12,8 +12,8 @@ train:
   enable_cuda_prefetch: true
   allow_tf32: true
   
-  train_data_path: /DATA/LSDIR/data  # 用户需确认是否改为动漫数据集路径
-  val_data_path: /DATA/LSDIR/vali
+  train_data_path: /DATA/ANIME/data  # TODO: 请修改为您实际的动漫数据集路径
+  val_data_path: /DATA/ANIME/vali    # TODO: 请修改为您实际的验证集路径
   val_every: 1
   log_every: 100
   early_stopping_patience: 15
@@ -54,11 +54,11 @@ online_data_options:
   blur_p: 0.1
   blur_sigma_min: 0.4
   blur_sigma_max: 1.0
-  jpeg_p: 0.1
-  jpeg_quality_min: 60
+  jpeg_p: 0.3          # 增加抗压缩能力
+  jpeg_quality_min: 40 # 动漫源常见压缩
   jpeg_quality_max: 95
-  webp_p: 0.1
-  webp_quality_min: 60
+  webp_p: 0.3
+  webp_quality_min: 40
   webp_quality_max: 95
 
 
@@ -69,22 +69,16 @@ model_config:
   use_tiling: False
   tile_size: 64
   tile_pad: 32
-  hat_patch_size: 1
-  hat_body_hid_channels: 180
-  hat_upsampler_hid_channels: 64
-  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-  hat_window_size: 16
-  hat_compress_ratio: 3
-  hat_squeeze_factor: 30
-  hat_conv_scale: 0.01
-  hat_overlap_ratio: 0.5
-  hat_mlp_ratio: 2.0
-  hat_qkv_bias: True
-  hat_drop_rate: 0.0
-  hat_attn_drop_rate: 0.0
-  hat_drop_path_rate: 0.1
-  hat_norm_layer: 'nn.LayerNorm'
-  hat_patch_norm: true
-  hat_use_checkpoint: true
-  hat_resi_connection: '1conv'
+  # MambaIRv2 SR2-L settings
+  upscale: 2
+  embed_dim: 174
+  d_state: 16
+  depths: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6]
+  window_size: 16
+  inner_rank: 64
+  num_tokens: 128
+  convffn_kernel_size: 5
+  mlp_ratio: 2.0
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'

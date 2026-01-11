@@ -109,10 +109,10 @@ class KawaiiTrainer:
         if self.loss_global_scale <= 0:
             raise ValueError('loss_global_scale 必须大于 0。')
         self.loss_fn = KawaiiLoss(
-            lambda_char=self.cfg.loss_weights['pixel'] * self.loss_global_scale,
-            lambda_lap=self.cfg.loss_weights['frequency'] * self.loss_global_scale,
-            lambda_perc=self.cfg.loss_weights['perceptual'] * self.loss_global_scale,
-            lambda_adv=self.cfg.loss_weights['adversarial'] * self.loss_global_scale,
+            lambda_pixel=self.cfg.loss_weights['pixel'] * self.loss_global_scale,
+            lambda_frequency=self.cfg.loss_weights['frequency'] * self.loss_global_scale,
+            lambda_perceptual=self.cfg.loss_weights['perceptual'] * self.loss_global_scale,
+            lambda_adversarial=self.cfg.loss_weights['adversarial'] * self.loss_global_scale,
             lambda_vgg=self.cfg.loss_weights['vgg'] * self.loss_global_scale,
             enable_anime_loss=bool(self.cfg.loss_options['enable_anime_loss']),
             device=str(self.device)
