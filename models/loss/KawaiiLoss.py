@@ -54,8 +54,8 @@ class KawaiiLoss(nn.Module):
         # 4. 对抗性损失
         self.adv_loss = HingeGeneratorLoss().to(device)
 
-        # 5. vgg损失
-        layer_weights = {'conv1_2': 0.1, 'conv2_2': 0.1, 'conv3_4': 1, 'conv4_4': 1, 'conv5_4': 1}
+        # 5. vgg损失 (推荐使用 relu 层以获得更好的特征表示)
+        layer_weights = {'relu1_2': 0.1, 'relu2_2': 0.1, 'relu3_4': 1, 'relu4_4': 1, 'relu5_4': 1}
         vgg_type = 'vgg19'
         
         # 实例化损失函数

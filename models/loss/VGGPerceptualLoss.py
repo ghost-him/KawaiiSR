@@ -164,6 +164,8 @@ class VGGPerceptualLoss(nn.Module):
         x_features = self.vgg(x)
         with torch.no_grad():
             gt_features = self.vgg(gt)
+            # 明确 detach 确保不保留计算图
+            gt_features = {k: v.detach() for k, v in gt_features.items()}
 
         # 计算感知损失
         percep_loss = 0.0
@@ -179,8 +181,8 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Running on device: {device}")
 
-    # 定义需要计算损失的层及其权重
-    layer_weights = {'conv1_2': 0.1, 'conv2_2': 0.1, 'conv3_4': 1, 'conv4_4': 1, 'conv5_4': 1}
+    # 定义需要计算损失的层及其权重 (推荐使用 relu 层)
+    layer_weights = {'relu1_2': 0.1, 'relu2_2': 0.1, 'relu3_4': 1, 'relu4_4': 1, 'relu5_4': 1}
     vgg_type = 'vgg19'
     
     # 实例化损失函数

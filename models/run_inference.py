@@ -127,10 +127,6 @@ def tiled_inference(model: KawaiiSR, img_tensor: torch.Tensor, tile_size: int = 
             # 6. 如果之前加了 padding 为了对齐 window_size，现在需要切掉
             if pad_h > 0 or pad_w > 0:
                 output_tile = output_tile[:, :, :h_tile * scale, :w_tile * scale]
-                
-            # 7. 这是一个比较关键的步骤：我们需要把 output_tile 中对应的“核心有效区域”提取出来
-            # 我们需要计算 input_tile 中，哪些部分是属于的核心区域（即 x_start到x_end，y_start到y_end）
-            # input_tile 的左上角是 (x_start_pad, y_start_pad)
             
             # 核心区域在 input_tile 内部的相对坐标：
             rel_x_start = x_start - x_start_pad
@@ -208,10 +204,8 @@ def main() -> None:
     args = parse_args()
 
     device_req = args.device
-    if torch.cuda.is_available() or 'cpu' in device_req:
-        device = torch.device(device_req)
-    else:
-        device = torch.device('cpu')
+
+    device = torch.device('cpu')
 
     if args.use_tiling and args.no_tiling:
         raise ValueError('不能同时指定 --use-tiling 与 --no-tiling')
@@ -230,9 +224,6 @@ def main() -> None:
         weights_path=weights_path,
         device=device,
         config_path=config_path,
-        force_tiling=force_tiling,
-        tile_size=args.tile_size,
-        tile_pad=args.tile_pad,
     )
     print(f'[信息] 模型 ready。use_tiling={getattr(model, "use_tiling", False)} tile_size={getattr(model, "tile_size", "?")}'
           f' tile_pad={getattr(model, "tile_pad", "?")}')
