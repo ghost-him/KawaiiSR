@@ -1,61 +1,68 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import math
-from .MambaIRv2 import MambaIRv2
+from .HAT import HAT
 
 class KawaiiSR(nn.Module):
     def __init__(self, 
                  image_size=64,
                  in_channels=3,
                  image_range = 1.,
-                 # MambaIRv2 defaults (SR2-L)
-                 upscale=2,
-                 embed_dim=174,
-                 d_state=16,
-                 depths=(6, 6, 6, 6, 6, 6, 6, 6, 6),
-                 num_heads=(6, 6, 6, 6, 6, 6, 6, 6, 6),
-                 window_size=16,
-                 inner_rank=64,
-                 num_tokens=128,
-                 convffn_kernel_size=5,
-                 mlp_ratio=2.0,
-                 upsampler='pixelshuffle',
-                 resi_connection='1conv',
-                 # Keep old args to prevent breaks if passed, but ignore them
+                 hat_patch_size=1,
+                 hat_body_hid_channels=96,
+                 hat_upsampler_hid_channels=64,
+                 hat_depths=(6, 6, 6, 6),
+                 hat_num_heads=(6, 6, 6, 6),
+                 hat_window_size=7,
+                 hat_compress_ratio=3,
+                 hat_squeeze_factor=30,
+                 hat_conv_scale=0.01,
+                 hat_overlap_ratio=0.5,
+                 hat_mlp_ratio=4.,
+                 hat_qkv_bias=True,
+                 hat_drop_rate=0.,
+                 hat_attn_drop_rate=0.,
+                 hat_drop_path_rate=0.1,
+                 hat_norm_layer=nn.LayerNorm,
+                 hat_patch_norm=True,
+                 hat_use_checkpoint=False,
+                 hat_resi_connection='1conv',
+                 tail_num_layers=4,
                  **kwargs
                  ):
         super(KawaiiSR, self).__init__()
-        self.scale = upscale 
-        self.window_size = window_size
+        self.scale = 2 # HAT 默认放大倍数
+        self.window_size = hat_window_size
         self.in_channels = in_channels
+        self.image_range = image_range
         
-        # Initialize MambaIRv2
-        self.mamba_model = MambaIRv2(
-            img_size=image_size,
-            patch_size=1, # Default in MambaIRv2
-            in_chans=in_channels,
-            embed_dim=embed_dim,
-            d_state=d_state,
-            depths=depths,
-            num_heads=num_heads,
-            window_size=window_size,
-            inner_rank=inner_rank,
-            num_tokens=num_tokens,
-            convffn_kernel_size=convffn_kernel_size,
-            mlp_ratio=mlp_ratio,
-            upscale=upscale,
-            img_range=image_range,
-            upsampler=upsampler,
-            resi_connection=resi_connection,
+        # 初始化 HAT 基底模型
+        self.hat_model = HAT(
+            image_size=image_size,
+            patch_size=hat_patch_size,
+            in_channels=in_channels,
+            out_channels=in_channels,
+            body_hid_channels=hat_body_hid_channels,
+            upsampler_hid_channels=hat_upsampler_hid_channels,
+            depths=hat_depths,
+            num_heads=hat_num_heads,
+            window_size=hat_window_size,
+            compress_ratio=hat_compress_ratio,
+            squeeze_factor=hat_squeeze_factor,
+            conv_scale=hat_conv_scale,
+            overlap_ratio=hat_overlap_ratio,
+            mlp_ratio=hat_mlp_ratio,
+            qkv_bias=hat_qkv_bias,
+            drop_rate=hat_drop_rate,
+            attn_drop_rate=hat_attn_drop_rate,
+            drop_path_rate=hat_drop_path_rate,
+            norm_layer=hat_norm_layer,
+            patch_norm=hat_patch_norm,
+            use_checkpoint=hat_use_checkpoint,
+            resi_connection=hat_resi_connection,
+            tail_num_layers=tail_num_layers,
         )
 
     def forward(self, x):
-        """
-        前向传播。
-        注意：输入图像 x 的长宽必须是 window_size 的倍数。
-        这一点由外部调用者（如 ONNX Runtime 的预处理或其他框架）保证。
-        模型内部不再进行 Padding 或 Tiling。
-        """
-        return self.mamba_model(x)
+        """直接执行 HAT 模型，外部负责 padding 和分块"""
+        return self.hat_model(x)
 

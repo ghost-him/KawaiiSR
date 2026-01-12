@@ -67,16 +67,22 @@ model_config:
   image_size: 64
   in_channels: 3
   image_range: 1.0
-  # MambaIRv2 SR2-L settings
-  upscale: 2
-  embed_dim: 174
-  d_state: 16
-  depths: [6, 6, 6, 6, 6, 6, 6, 6, 6]
-  num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6]
-  window_size: 16
-  inner_rank: 64
-  num_tokens: 128
-  convffn_kernel_size: 5
-  mlp_ratio: 2.0
-  upsampler: 'pixelshuffle'
-  resi_connection: '1conv'
+  hat_patch_size: 1
+  hat_body_hid_channels: 180
+  hat_upsampler_hid_channels: 64
+  hat_depths: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_num_heads: [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
+  hat_window_size: 16
+  hat_compress_ratio: 3
+  hat_squeeze_factor: 30
+  hat_conv_scale: 0.01
+  hat_overlap_ratio: 0.5
+  hat_mlp_ratio: 2.0
+  hat_qkv_bias: True
+  hat_drop_rate: 0.0
+  hat_attn_drop_rate: 0.0
+  hat_drop_path_rate: 0.1
+  hat_norm_layer: 'nn.LayerNorm'
+  hat_patch_norm: true
+  hat_use_checkpoint: true
+  hat_resi_connection: '1conv'

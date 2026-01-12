@@ -64,19 +64,25 @@ def get_default_model_config() -> Dict[str, Any]:
         'image_size': 64,
         'in_channels': 3,
         'image_range': 1.0,
-        # MambaIRv2 defaults
-        'upscale': 2,
-        'embed_dim': 174,
-        'd_state': 16,
-        'depths': (6, 6, 6, 6, 6, 6, 6, 6, 6),
-        'num_heads': (6, 6, 6, 6, 6, 6, 6, 6, 6),
-        'window_size': 16,
-        'inner_rank': 64,
-        'num_tokens': 128,
-        'convffn_kernel_size': 5,
-        'mlp_ratio': 2.0,
-        'upsampler': 'pixelshuffle',
-        'resi_connection': '1conv'
+        'hat_patch_size': 1,
+        'hat_body_hid_channels': 180,
+        'hat_upsampler_hid_channels': 64,
+        'hat_depths': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
+        'hat_num_heads': (6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6),
+        'hat_window_size': 16,
+        'hat_compress_ratio': 3,
+        'hat_squeeze_factor': 30,
+        'hat_conv_scale': 0.01,
+        'hat_overlap_ratio': 0.5,
+        'hat_mlp_ratio': 2.0,
+        'hat_qkv_bias': True,
+        'hat_drop_rate': 0.0,
+        'hat_attn_drop_rate': 0.0,
+        'hat_drop_path_rate': 0.1,
+        'hat_norm_layer': nn.LayerNorm,
+        'hat_patch_norm': True,
+        'hat_use_checkpoint': False,
+        'hat_resi_connection': '1conv'
     }
 
 DEFAULT_LOSS_WEIGHTS = {
@@ -99,13 +105,6 @@ DEFAULT_GAN_CFG = {
 
 SAVE_METRIC_KEYS = ('psnr', 'ssim', 'lpips', 'val_loss')
 
-
-def _ensure_required_dict(name: str, value: Any) -> Dict[str, Any]:
-    if value is None:
-        raise ValueError(f'配置缺少必要字段 "{name}"。')
-    if not isinstance(value, dict):
-        raise ValueError(f'配置项 "{name}" 必须是字典。')
-    return dict(value)
 
 
 def _validate_dict_keys(name: str, value: Dict[str, Any], required_keys) -> None:
@@ -162,31 +161,41 @@ def create_training_config(
 
 
         # 模型配置
-        model_cfg = raw_data.get('model_config')
-        if model_cfg is None:
-            model_cfg = raw_data.get('model')
-        model_cfg = _ensure_required_dict('model_config', model_cfg)
-        # Relax required keys check to allow new keys from YAML
-        # required_model_keys = set(get_default_model_config().keys())
-        # _validate_dict_keys('model_config', model_cfg, required_model_keys)
-        
-        # Norm layer parsing removed for MambaIRv2 as it uses default nn.LayerNorm
+        model_cfg = raw_data['model_config']
+        required_model_keys = set(get_default_model_config().keys())
+        _validate_dict_keys('model_config', model_cfg, required_model_keys)
+        norm_layer_value = model_cfg.get('hat_norm_layer')
+        if isinstance(norm_layer_value, str):
+            norm_key = norm_layer_value.strip().lower()
+            norm_mapping = {
+                'layernorm': nn.LayerNorm,
+                'nn.layernorm': nn.LayerNorm,
+                'torch.nn.layernorm': nn.LayerNorm,
+            }
+            if norm_key not in norm_mapping:
+                raise ValueError('model_config.hat_norm_layer 字符串值无法识别，仅支持 LayerNorm。')
+            model_cfg['hat_norm_layer'] = norm_mapping[norm_key]
+        elif norm_layer_value is not None and not callable(norm_layer_value):
+            raise ValueError('model_config.hat_norm_layer 必须是可调用对象或受支持的字符串名称。')
+        # 清理已弃用的 tiling 配置（调用方自行负责分块）
+        for deprecated_key in ('use_tiling', 'tile_size', 'tile_pad'):
+            model_cfg.pop(deprecated_key, None)
         config_payload['model_config'] = model_cfg
 
         # 损失、GAN、在线数据等配置
-        loss_weights_cfg = _ensure_required_dict('loss_weights', raw_data.get('loss_weights'))
+        loss_weights_cfg = raw_data['loss_weights']
         _validate_dict_keys('loss_weights', loss_weights_cfg, DEFAULT_LOSS_WEIGHTS.keys())
         config_payload['loss_weights'] = loss_weights_cfg
 
-        loss_options_cfg = _ensure_required_dict('loss_options', raw_data.get('loss_options'))
+        loss_options_cfg = raw_data['loss_options']
         _validate_dict_keys('loss_options', loss_options_cfg, DEFAULT_LOSS_OPTIONS.keys())
         config_payload['loss_options'] = loss_options_cfg
 
-        gan_cfg = _ensure_required_dict('gan', raw_data.get('gan'))
+        gan_cfg = raw_data['gan']
         _validate_dict_keys('gan', gan_cfg, DEFAULT_GAN_CFG.keys())
         config_payload['gan'] = gan_cfg
 
-        online_data_cfg = _ensure_required_dict('online_data_options', raw_data.get('online_data_options'))
+        online_data_cfg = raw_data['online_data_options']
         config_payload['online_data_options'] = online_data_cfg
 
         metrics_cfg = raw_data.get('save_metrics')
