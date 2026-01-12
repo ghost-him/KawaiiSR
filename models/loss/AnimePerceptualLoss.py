@@ -123,6 +123,8 @@ class AnimePerceptualLoss(nn.Module):
         gen_features = self._extract_features(gen)
         with torch.no_grad():
             gt_features = self._extract_features(gt)
+            # 明确 detach 确保不保留计算图
+            gt_features = {k: v.detach() for k, v in gt_features.items()}
 
         total_loss = 0.0
         for name, weight in self.layer_weights.items():
