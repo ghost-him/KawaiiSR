@@ -10,16 +10,15 @@ from einops import rearrange, repeat
 
 
 def index_reverse(index):
+    ind = torch.arange(0, index.shape[-1], device=index.device)
     index_r = torch.zeros_like(index)
-    ind = torch.arange(0, index.shape[-1]).to(index.device)
-    for i in range(index.shape[0]):
-        index_r[i, index[i, :]] = ind
+    index_r.scatter_(1, index, ind.unsqueeze(0).expand_as(index))
     return index_r
 
 
 def semantic_neighbor(x, index):
     dim = index.dim()
-    assert x.shape[:dim] == index.shape, "x ({:}) and index ({:}) shape incompatible".format(x.shape, index.shape)
+    # assert x.shape[:dim] == index.shape, "x ({:}) and index ({:}) shape incompatible".format(x.shape, index.shape)
 
     for _ in range(x.dim() - index.dim()):
         index = index.unsqueeze(-1)
@@ -131,9 +130,9 @@ def window_reverse(windows, window_size, h, w):
     Returns:
         x: (b, h, w, c)
     """
-    b = int(windows.shape[0] / (h * w / window_size / window_size))
-    x = windows.view(b, h // window_size, w // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(b, h, w, -1)
+    # b = int(windows.shape[0] / (h * w / window_size / window_size))
+    x = windows.view(-1, h // window_size, w // window_size, window_size, window_size, windows.shape[-1])
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, h, w, windows.shape[-1])
     return x
 
 
@@ -250,7 +249,11 @@ class ASSM(nn.Module):
         prompt = torch.matmul(cls_policy, full_embedding).view(B, n, self.d_state)
 
         detached_index = torch.argmax(cls_policy.detach(), dim=-1, keepdim=False).view(B, n)  # [B, HW]
-        x_sort_values, x_sort_indices = torch.sort(detached_index, dim=-1, stable=False)
+        # x_sort_values, x_sort_indices = torch.sort(detached_index, dim=-1, stable=False)
+        # x_sort_indices = torch.argsort(detached_index, dim=-1, stable=False)
+        # Use topk instead of sort/argsort for onnx export compatibility
+        # Note: topk largest=False mimics sort ascending
+        _, x_sort_indices = torch.topk(detached_index, k=detached_index.size(-1), dim=-1, largest=False, sorted=True)
         x_sort_indices_reverse = index_reverse(x_sort_indices)
 
         x = x.permute(0, 2, 1).reshape(B, C, H, W).contiguous()

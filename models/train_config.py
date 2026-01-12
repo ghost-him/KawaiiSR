@@ -64,9 +64,6 @@ def get_default_model_config() -> Dict[str, Any]:
         'image_size': 64,
         'in_channels': 3,
         'image_range': 1.0,
-        'use_tiling': False,
-        'tile_size': 64,
-        'tile_pad': 32,
         # MambaIRv2 defaults
         'upscale': 2,
         'embed_dim': 174,

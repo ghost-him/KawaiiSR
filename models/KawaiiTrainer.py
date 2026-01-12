@@ -463,6 +463,13 @@ class KawaiiTrainer:
 
         for epoch in range(start_epoch, self.cfg.epochs):
             final_epoch_idx = epoch
+            
+            # [Fix] 重置指标状态，防止状态无限累积导致计算变慢
+            self.psnr.reset()
+            self.ssim.reset()
+            if self.lpips is not None:
+                self.lpips.reset()
+
             self.model.train()
             epoch_start_wall = time.perf_counter()
             # 训练期内统计
@@ -493,33 +500,69 @@ class KawaiiTrainer:
 
                 compute_start = time.perf_counter()
 
-                # 判别器更新（若启用）
+                # ---------------------------------------------------------
+                # 优化后的训练步：共享生成器前向传播 (One Forward per Step)
+                # ---------------------------------------------------------
+                
+                use_amp = self.cfg.mixed_precision
+                
+                # 1. 统一前向传播 (G) - 覆盖 D 和 G 的需求
+                # 开启混合精度上下文（如果启用）
+                with autocast(enabled=use_amp):
+                    sr_img = self.model(lr_img)
+
+                # 2. 判别器更新 (D)
                 disc_loss = 0.0
                 if self.gan_enabled and self.disc is not None:
-                    # 先用上一轮的生成器输出（不可用），这里简单采用先前生成的思路不现实；直接用当前生成器前向一次用于 D
-                    with torch.no_grad():
-                        fake_img_for_d = self.model(lr_img)
-                    disc_loss = self._train_disc_step(real=hr_img, fake=fake_img_for_d)
+                    self.disc.train()
+                    self.disc_opt.zero_grad(set_to_none=True)
+                    
+                    with autocast(enabled=use_amp):
+                        # 必须 detach，避免梯度回传给生成器
+                        # D 此时处于 train 模式
+                        real_logits = self.disc(hr_img)
+                        fake_logits = self.disc(sr_img.detach())
+                        
+                        if self.disc_loss_fn is not None:
+                            loss_d = self.disc_loss_fn(real_logits, fake_logits)
+                        else:
+                            raise RuntimeError("Discriminator loss function not defined.")
+                    
+                    # D 的反向传播
+                    if use_amp:
+                        # 推荐: D 和 G 共享 scaler 或 D 也使用 scaler
+                        self.scaler.scale(loss_d).backward()
+                        self.scaler.step(self.disc_opt)
+                        # 注意：scaler.update() 统一在 G step 后调用一次即可，或者根据情况调用
+                    else:
+                        loss_d.backward()
+                        self.disc_opt.step()
+                        
+                    disc_loss = float(loss_d.item())
 
-                # 生成器更新
+                # 3. 生成器更新 (G)
                 self.opt.zero_grad(set_to_none=True)
-                # 冻结判别器参数，避免在G步对D累积梯度
+                
+                # 冻结判别器参数，避免在计算 G loss 时对 D 产生梯度
                 disc_prev_requires_grad = []
                 if self.disc is not None:
                     for p in self.disc.parameters():
                         disc_prev_requires_grad.append(p.requires_grad)
                         p.requires_grad = False
 
-                # 在生成器步中将判别器切到 eval，避免 BN/状态在 G 反传时被更新
+                # 将判别器切到 eval 模式，避免 BN 统计量被 G 的假图更新
                 disc_prev_mode = None
                 if self.disc is not None:
                     disc_prev_mode = self.disc.training
                     self.disc.eval()
 
-                if self.cfg.mixed_precision:
-                    with autocast():
-                        sr_img = self.model(lr_img)
-                        total_loss, parts = self._compute_total_loss(sr_img, hr_img)
+                # 计算 G 的 Loss
+                with autocast(enabled=use_amp):
+                    # 此时 sr_img 带有计算图，可以直接用于 loss 计算
+                    total_loss, parts = self._compute_total_loss(sr_img, hr_img)
+
+                # G 的反向传播
+                if use_amp:
                     self.scaler.scale(total_loss).backward()
                     if self.cfg.gradient_clip_norm and self.cfg.gradient_clip_norm > 0:
                         self.scaler.unscale_(self.opt)
@@ -527,16 +570,19 @@ class KawaiiTrainer:
                     self.scaler.step(self.opt)
                     self.scaler.update()
                 else:
-                    sr_img = self.model(lr_img)
-                    total_loss, parts = self._compute_total_loss(sr_img, hr_img)
                     total_loss.backward()
                     if self.cfg.gradient_clip_norm and self.cfg.gradient_clip_norm > 0:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.gradient_clip_norm)
                     self.opt.step()
 
-                # 恢复判别器训练/评估模式
-                if self.disc is not None and disc_prev_mode is not None:
-                    self.disc.train(disc_prev_mode)
+                # 4. 恢复判别器状态
+                if self.disc is not None:
+                    # 恢复 train/eval 模式
+                    if disc_prev_mode is not None:
+                        self.disc.train(disc_prev_mode)
+                    # 恢复 requires_grad
+                    for p, flag in zip(self.disc.parameters(), disc_prev_requires_grad):
+                        p.requires_grad = flag
 
                 if self.sched:
                     self.sched.step()
