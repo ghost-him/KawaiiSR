@@ -1,0 +1,6 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "KawaiiSR/src-tauri/Cargo.toml"
+    ],
+    "cmake.sourceDirectory": "C:/Users/ghost/KawaiiSR/test_cpp"
+}
