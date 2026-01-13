@@ -2133,6 +2133,8 @@ dependencies = [
 name = "kawaiisr"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "crossbeam-channel",
  "image",
  "ndarray",
  "ort",

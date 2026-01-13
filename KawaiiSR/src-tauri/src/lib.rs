@@ -1,3 +1,8 @@
+pub mod sr_manager;
+pub mod app_state;
+pub mod pipeline;
+pub mod id_generator;
+use std::sync::Arc;
 use image::{GenericImageView, ImageBuffer, Rgb};
 use ndarray::{Array3, Array4, Axis};
 use ort::{
@@ -6,6 +11,8 @@ use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::Value,
 };
+
+use crate::app_state::AppState;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -146,6 +153,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![greet, run_super_resolution])
+        .manage(Arc::new(AppState::default()))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
