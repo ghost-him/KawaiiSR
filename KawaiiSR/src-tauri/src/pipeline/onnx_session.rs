@@ -2,8 +2,13 @@ use ndarray::Array4;
 use std::sync::Arc;
 use crate::pipeline::image_meta::ImageMeta;
 use crossbeam_channel::{Receiver, Sender};
-use tauri::async_runtime::Mutex;
 use crate::pipeline::image_stitcher::StitcherInfo;
+use ort::{
+    execution_providers::DirectMLExecutionProvider,
+    inputs,
+    session::{builder::GraphOptimizationLevel, Session},
+    value::Value,
+};
 
 pub struct OnnxSessionInfo {
     // 可能会将不同任务的多个切片一起送入ONNX进行推理，所以要区分不同的batch上是哪一个任务的切片
@@ -15,32 +20,134 @@ pub struct OnnxSessionInfo {
     pub image_meta: Vec<Arc<ImageMeta>>,
 }
 
-
-#[derive(Debug)]
 pub struct OnnxSession {
-    #[allow(dead_code)]
-    inner: Arc<Mutex<OnnxSessionInner>>,
+    _handle: std::thread::JoinHandle<()>,
 }
 
 impl OnnxSession {
     pub fn new(batcher_rx: Receiver<OnnxSessionInfo>, stitcher_tx: Sender<StitcherInfo>) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(OnnxSessionInner::new(batcher_rx, stitcher_tx))),
-        }
+        let mut inner = OnnxSessionInner {
+            batcher_rx,
+            stitcher_tx,
+            session: None,
+        };
+
+        let handle = std::thread::spawn(move || {
+            inner.execute();
+        });
+
+        Self { _handle: handle }
     }
 }
 
-#[derive(Debug)]
-pub struct OnnxSessionInner {
-    pub batcher_rx: Receiver<OnnxSessionInfo>,
-    pub stitcher_tx: Sender<StitcherInfo>,
+struct OnnxSessionInner {
+    batcher_rx: Receiver<OnnxSessionInfo>,
+    stitcher_tx: Sender<StitcherInfo>,
+    session: Option<Session>,
 }
 
 impl OnnxSessionInner {
-    pub fn new(batcher_rx: Receiver<OnnxSessionInfo>, stitcher_tx: Sender<StitcherInfo>) -> Self {
-        Self {
-            batcher_rx,
-            stitcher_tx,
+    fn execute(&mut self) {
+        println!("[OnnxSession] Started");
+        
+        // 1. 初始化 ONNX 模型
+        if let Err(e) = self.initialize_model() {
+            eprintln!("[OnnxSession] Failed to initialize model: {:?}", e);
+            return;
         }
+        
+        // 2. 接收数据并进行推理
+        while let Ok(onnx_info) = self.batcher_rx.recv() {
+            println!(
+                "[OnnxSession] Processing batch with {} tiles, shape: {:?}",
+                onnx_info.task_id.len(),
+                onnx_info.batch_data.shape()
+            );
+            
+            if let Err(e) = self.process_batch(onnx_info) {
+                eprintln!("[OnnxSession] Failed to process batch: {:?}", e);
+                // 继续处理下一批，不中断整个流程
+            }
+        }
+        
+        println!("[OnnxSession] Stopped");
+    }
+    
+    fn initialize_model(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let cwd = std::env::current_dir()?;
+        let mut model_path = cwd.join("onnx/kawaii_sr.onnx");
+        if !model_path.exists() {
+            model_path = cwd.join("src-tauri/onnx/kawaii_sr.onnx");
+        }
+        
+        println!("[OnnxSession] Loading model from: {:?}", model_path);
+        if !model_path.exists() {
+            return Err(format!("Model not found at {:?}", model_path).into());
+        }
+        
+        let session = {
+            println!("[OnnxSession] Attempting to load with DirectML...");
+            match Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::All)?
+                .with_execution_providers([DirectMLExecutionProvider::default().build()])?
+                .with_parallel_execution(true)?
+                .commit_from_file(&model_path)
+            {
+                Ok(s) => {
+                    println!("[OnnxSession] ✓ Model loaded with DirectML");
+                    s
+                }
+                Err(e) => {
+                    eprintln!("[OnnxSession] ✗ DirectML failed: {:?}, falling back to CPU", e);
+                    Session::builder()?
+                        .with_optimization_level(GraphOptimizationLevel::All)?
+                        .with_parallel_execution(true)?
+                        .commit_from_file(&model_path)?
+                }
+            }
+        };
+        
+        self.session = Some(session);
+        Ok(())
+    }
+    
+    fn process_batch(&mut self, onnx_info: OnnxSessionInfo) -> Result<(), Box<dyn std::error::Error>> {
+        let session = self.session.as_mut()
+            .ok_or("ONNX session not initialized")?;
+        
+        // 运行推理
+        let input_tensor = Value::from_array(onnx_info.batch_data.as_standard_layout().to_owned())?;
+        let outputs = session.run(inputs!["input" => input_tensor])?;
+        
+        let output_value = outputs
+            .get("output")
+            .ok_or("Failed to get output 'output'")?;
+        let (output_shape, output_data) = output_value.try_extract_tensor::<f32>()?;
+        
+        println!("[OnnxSession] Inference completed, output shape: {:?}", output_shape);
+        
+        // 构建输出数据
+        let out_n = output_shape[0] as usize;
+        let out_c = output_shape[1] as usize;
+        let out_h = output_shape[2] as usize;
+        let out_w = output_shape[3] as usize;
+        
+        let stitched_data = Array4::from_shape_vec(
+            (out_n, out_c, out_h, out_w),
+            output_data.to_vec()
+        )?;
+        
+        // 发送到 Stitcher
+        let stitcher_info = StitcherInfo {
+            task_id: onnx_info.task_id,
+            tile_index: onnx_info.tile_index,
+            stitched_data,
+            image_meta: onnx_info.image_meta,
+        };
+        
+        self.stitcher_tx.send(stitcher_info)
+            .map_err(|e| format!("Failed to send to stitcher: {}", e))?;
+        
+        Ok(())
     }
 }

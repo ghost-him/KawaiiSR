@@ -10,6 +10,8 @@ impl Default for IDGenerator {
         IDGenerator {
             next_id: AtomicUsize::new(1),
         }
+
+        
     }
 }
 

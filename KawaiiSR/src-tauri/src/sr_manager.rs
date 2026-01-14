@@ -1,9 +1,9 @@
-use std::{sync::Arc};
+use std::{sync::Arc, collections::HashMap};
 use crate::id_generator::IDGenerator;
 use image::GenericImageView;
 use ndarray::{Array3, Array4};
 use crossbeam_channel::{Sender, Receiver, unbounded};
-use tauri::{async_runtime::{Mutex}, image::Image};
+use tauri::{async_runtime::Mutex, AppHandle, Emitter};
 use crate::pipeline::{ 
     image_stitcher::ImageStitcher, 
     image_tiler::{ImageTiler, TilerInfo}, 
@@ -37,6 +37,7 @@ pub struct SRInfo {
 
 /// 对内表示的信息，可见范围：SRManager 以及 image_stitcher
 /// 表示image_stticher工作结束，传回给SRManager的信息
+#[derive(Clone)]
 pub struct ImageInfo {
     // 该图片任务的唯一标识符
     pub task_id: usize,
@@ -47,44 +48,131 @@ pub struct ImageInfo {
 }
 
 
-#[derive(Debug)]
 pub struct SRManager {
     // 用于管理超分辨率管道的结构体
     inner: Arc<Mutex<SRManagerInner>>,
 }
 
 
+impl Default for SRManager {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SRManagerInner::default())),
+        }
+    }
+}
+
 impl SRManager {
-    pub async fn run_inference(&mut self, sr_info: SRInfo) -> Result<usize> {
+    pub async fn run_inference(&self, sr_info: SRInfo) -> Result<usize> {
         let mut inner = self.inner.lock().await;
         inner.run_inference(sr_info)
     }
 
 
     // 获取该图片的结果
-    pub async fn get_result(&self, task_id: usize) -> Option<Arc<Image<'static>>> {
-        let mut inner = self.inner.lock().await;
-        inner.get_result(task_id)
+    pub async fn get_result(&self, task_id: usize) -> Option<ImageInfo> {
+        let inner = self.inner.lock().await;
+        inner.get_result(task_id).await
     }
 
+    // 设置 AppHandle 以便发射事件
+    pub async fn set_app_handle(&self, handle: AppHandle) {
+        let inner = self.inner.lock().await;
+        inner.result_collector.set_app_handle(handle).await;
+    }
 }
 
-#[derive(Debug)]
+pub struct ResultCollector {
+    _handle: std::thread::JoinHandle<()>,
+    app_handle_store: Arc<Mutex<Option<AppHandle>>>,
+}
+
+impl ResultCollector {
+    pub fn new(
+        result_rx: Receiver<ImageInfo>,
+        results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
+        app_handle: Option<AppHandle>,
+    ) -> Self {
+        let app_handle_store = Arc::new(Mutex::new(app_handle));
+        let app_handle_store_inner = app_handle_store.clone();
+
+        let mut inner = ResultCollectorInner {
+            result_rx,
+            results,
+            app_handle: app_handle_store_inner,
+        };
+
+        let handle = std::thread::spawn(move || {
+            inner.execute();
+        });
+
+        Self { _handle: handle, app_handle_store }
+    }
+
+    pub async fn set_app_handle(&self, handle: AppHandle) {
+        let mut store = self.app_handle_store.lock().await;
+        *store = Some(handle);
+    }
+}
+
+struct ResultCollectorInner {
+    result_rx: Receiver<ImageInfo>,
+    results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
+    app_handle: Arc<Mutex<Option<AppHandle>>>,
+}
+
+impl ResultCollectorInner {
+    fn execute(&mut self) {
+        println!("[ResultCollector] Started");
+
+        while let Ok(image_info) = self.result_rx.recv() {
+            let task_id = image_info.task_id;
+            println!(
+                "[ResultCollector] Received result for task {} with shape: {:?}",
+                task_id,
+                image_info.image_data.shape()
+            );
+
+            // 1. 保存到内部存储
+            let results_clone = self.results.clone();
+            tauri::async_runtime::block_on(async move {
+                let mut results = results_clone.lock().await;
+                results.insert(task_id, image_info);
+            });
+
+            // 2. 交互外部模块: 通知前端任务完成
+            let app_handle_clone = self.app_handle.clone();
+            tauri::async_runtime::block_on(async move {
+                let handle_lock = app_handle_clone.lock().await;
+                if let Some(handle) = &*handle_lock {
+                    if let Err(e) = handle.emit("sr-task-completed", task_id) {
+                        eprintln!("[ResultCollector] Failed to emit event: {}", e);
+                    }
+                }
+            });
+        }
+
+        println!("[ResultCollector] Stopped");
+    }
+}
+
 pub struct SRManagerInner {
     // 将图片分割
-    pub image_tiler: Arc<ImageTiler>,
+    pub image_tiler: ImageTiler,
     // 将图片合并成一个batch来运行
-    pub tensor_batcher: Arc<Mutex<TensorBatcher>>,
+    pub tensor_batcher: TensorBatcher,
     // Onnx推理
-    pub onnx_session: Arc<Mutex<OnnxSession>>,
+    pub onnx_session: OnnxSession,
     // 图片恢复
-    pub image_stitcher: Arc<Mutex<ImageStitcher>>,
+    pub image_stitcher: ImageStitcher,
     // 任务标识符生成器
     pub id_generator: Arc<IDGenerator>,
     // 向 Tiler 发送数据的通道 (manager 只维护这个)
-    pub tiler_tx: Option<Sender<TilerInfo>>,
-    // 接收从 stitcher 发回的图片结果的通道
-    pub result_receiver: Receiver<ImageInfo>,
+    pub tiler_tx: Sender<TilerInfo>,
+    // 任务结果存储 (Key: task_id)
+    pub results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
+    // 结果收集器 (后台线程监控)
+    pub result_collector: ResultCollector,
 }
 
 impl Default for SRManagerInner {
@@ -106,11 +194,16 @@ impl Default for SRManagerInner {
         // Stitcher -> Manager 的通道
         let (stitcher_tx_manager, stitcher_rx_manager) = unbounded();
 
-        // 创建各个 pipeline 组件，传入接收和发送通道
-        let image_tiler = Arc::new(ImageTiler::new(manager_rx_tiler, tiler_tx_batcher));
-        let tensor_batcher = Arc::new(Mutex::new(TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx)));
-        let onnx_session = Arc::new(Mutex::new(OnnxSession::new(batcher_rx_onnx, onnx_tx_stitcher)));
-        let image_stitcher = Arc::new(Mutex::new(ImageStitcher::new(onnx_rx_stitcher, stitcher_tx_manager)));
+        // 创建各组件
+        let results = Arc::new(Mutex::new(HashMap::new()));
+        
+        let image_tiler = ImageTiler::new(manager_rx_tiler, tiler_tx_batcher);
+        let tensor_batcher = TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx);
+        let onnx_session = OnnxSession::new(batcher_rx_onnx, onnx_tx_stitcher);
+        let image_stitcher = ImageStitcher::new(onnx_rx_stitcher, stitcher_tx_manager);
+        
+        // 监控最终结果
+        let result_collector = ResultCollector::new(stitcher_rx_manager, results.clone(), None);
 
         Self {
             image_tiler,
@@ -118,8 +211,9 @@ impl Default for SRManagerInner {
             onnx_session,
             image_stitcher,
             id_generator: Arc::new(IDGenerator::default()),
-            tiler_tx: Some(manager_tx_tiler),
-            result_receiver: stitcher_rx_manager,
+            tiler_tx: manager_tx_tiler,
+            results,
+            result_collector,
         }
     }
 }
@@ -148,26 +242,21 @@ impl SRManagerInner {
         let current_task_id = self.id_generator.generate_id();
 
         // 3. 封装信息并发送给 image_tiler
-        if let Some(tx) = &self.tiler_tx {
-            let tiler_info = TilerInfo {
-                task_id: current_task_id,
-                image_data: array,
-                image_meta: image_meta,
-            };
-            tx.send(tiler_info).map_err(|e| anyhow::anyhow!("Failed to send to tiler: {}", e))?;
-        } else {
-            return Err(anyhow::anyhow!("Tiler channel not initialized"));
-        }
+        let tiler_info = TilerInfo {
+            task_id: current_task_id,
+            image_data: array,
+            image_meta: image_meta,
+        };
+        self.tiler_tx.send(tiler_info).map_err(|e| anyhow::anyhow!("Failed to send to tiler: {}", e))?;
 
         Ok(current_task_id)
     }
 
 
     // 获取该图片的结果
-    pub fn get_result(&mut self, _task_id: usize) -> Option<Arc<Image<'static>>> {
-        // 从image_meta_storage中获取结果
-        None
+    pub async fn get_result(&self, task_id: usize) -> Option<ImageInfo> {
+        let results = self.results.lock().await;
+        results.get(&task_id).cloned()
     }
-    
 }
 
