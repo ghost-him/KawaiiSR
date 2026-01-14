@@ -15,7 +15,9 @@ use crate::pipeline::{
 use anyhow::Result;
 use crate::pipeline::image_meta::ImageMeta;
 
-#[derive(Debug, Clone, Default)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum ModelName {
     #[default]
     KawaiiSR,
@@ -24,6 +26,7 @@ pub enum ModelName {
 
 /// 用于对外表示的信息，
 /// 可见范围：外部调用模块，SRManager
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SRInfo {
     // 输入图像路径
     pub input_path: String,

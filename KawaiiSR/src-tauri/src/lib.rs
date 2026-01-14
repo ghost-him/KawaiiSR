@@ -14,33 +14,26 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-async fn run_super_resolution(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
-    println!("Command 'run_super_resolution' invoked");
+async fn run_super_resolution(
+    state: tauri::State<'_, Arc<AppState>>,
+    input_path: String,
+    scale_factor: u32,
+) -> Result<usize, String> {
+    println!("Command 'run_super_resolution' invoked for {}", input_path);
     
     let manager = state.sr_pipline.clone();
 
-    // 默认使用项目根目录下的 test.png 进行测试
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let mut img_path = cwd.join("../test.png");
-    if !img_path.exists() {
-        img_path = cwd.join("test.png");
-    }
-
-    if !img_path.exists() {
-        return Err(format!("Input image not found at {:?}. CWD is {:?}", img_path, cwd));
-    }
-
     let sr_info = SRInfo {
-        input_path: img_path.to_string_lossy().to_string(),
+        input_path,
         model_name: ModelName::KawaiiSR,
-        scale_factor: 2, // 默认放大倍数
+        scale_factor,
         output_path: None,
     };
 
     match manager.run_inference(sr_info).await {
         Ok(task_id) => {
             println!("✓ Super-resolution task {} started successfully", task_id);
-            Ok(format!("Super-resolution task started. Task ID: {}", task_id))
+            Ok(task_id)
         },
         Err(e) => {
             let err_msg = format!("SR Error: {:?}", e);
@@ -50,13 +43,91 @@ async fn run_super_resolution(state: tauri::State<'_, Arc<AppState>>) -> Result<
     }
 }
 
+#[tauri::command]
+async fn get_result_image(
+    state: tauri::State<'_, Arc<AppState>>,
+    task_id: usize,
+) -> Result<Vec<u8>, String> {
+    let manager = state.sr_pipline.clone();
+    
+    if let Some(info) = manager.get_result(task_id).await {
+        // Convert to PNG bytes
+        let data = &info.image_data;
+        let shape = data.shape();
+        let height = shape[2];
+        let width = shape[3];
+        
+        let mut pixels = Vec::with_capacity(height * width * 3);
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..3 {
+                    let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
+                    pixels.push(val);
+                }
+            }
+        }
+        
+        if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
+            let mut cursor = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut cursor, image::ImageFormat::Png)
+                        .map_err(|e| e.to_string())?;
+            Ok(cursor.into_inner())
+        } else {
+            Err("Failed to create image from raw pixels".to_string())
+        }
+    } else {
+        Err("Result not found or not yet ready".to_string())
+    }
+}
+
+#[tauri::command]
+async fn save_result_image(
+    state: tauri::State<'_, Arc<AppState>>,
+    task_id: usize,
+    output_path: String,
+) -> Result<(), String> {
+    let manager = state.sr_pipline.clone();
+    
+    if let Some(info) = manager.get_result(task_id).await {
+        let data = &info.image_data;
+        let shape = data.shape();
+        let height = shape[2];
+        let width = shape[3];
+        
+        let mut pixels = Vec::with_capacity(height * width * 3);
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..3 {
+                    let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
+                    pixels.push(val);
+                }
+            }
+        }
+        
+        if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
+            img.save(output_path).map_err(|e| e.to_string())?;
+            Ok(())
+        } else {
+            Err("Failed to create image from raw pixels".to_string())
+        }
+    } else {
+        Err("Result not found or not yet ready".to_string())
+    }
+}
+
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, run_super_resolution])
+        .invoke_handler(tauri::generate_handler![
+            greet, 
+            run_super_resolution,
+            get_result_image,
+            save_result_image
+        ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {
             // 获取 AppState

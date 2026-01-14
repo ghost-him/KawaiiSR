@@ -1,51 +1,191 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
-const greetMsg = ref("");
-const name = ref("");
+const inputPath = ref("");
+const scaleFactor = ref(2);
+const statusMsg = ref("Ready");
+const taskID = ref<number | null>(null);
+const resultImageSrc = ref<string | null>(null);
+const isProcessing = ref(false);
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
-  await invoke("run_super_resolution");
+let unlisten: UnlistenFn | null = null;
+
+onMounted(async () => {
+  unlisten = await listen<number>("sr-task-completed", async (event) => {
+    const completedTaskId = event.payload;
+    if (completedTaskId === taskID.value) {
+      statusMsg.value = `Task ${completedTaskId} completed. Fetching image...`;
+      await fetchResultImage(completedTaskId);
+      isProcessing.value = false;
+    }
+  });
+});
+
+onUnmounted(() => {
+  if (unlisten) unlisten();
+});
+
+async function selectFile() {
+  const selected = await open({
+    multiple: false,
+    filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
+  });
+  if (selected && !Array.isArray(selected)) {
+    inputPath.value = selected;
+  }
+}
+
+async function startSR() {
+  if (!inputPath.value) {
+    statusMsg.value = "Please select an input image.";
+    return;
+  }
+
+  try {
+    isProcessing.value = true;
+    statusMsg.value = "Starting super-resolution...";
+    resultImageSrc.value = null;
+    
+    const id = await invoke<number>("run_super_resolution", {
+      inputPath: inputPath.value,
+      scaleFactor: scaleFactor.value
+    });
+    
+    taskID.value = id;
+    statusMsg.value = `Task started (ID: ${id}). Waiting for results...`;
+  } catch (err) {
+    statusMsg.value = `Error: ${err}`;
+    isProcessing.value = false;
+  }
+}
+
+async function fetchResultImage(id: number) {
+  try {
+    const bytes = await invoke<Uint8Array>("get_result_image", { taskId: id });
+    const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+    resultImageSrc.value = URL.createObjectURL(blob);
+    statusMsg.value = "Image loaded.";
+  } catch (err) {
+    statusMsg.value = `Failed to fetch image: ${err}`;
+  }
+}
+
+async function saveResult() {
+  if (taskID.value === null) return;
+
+  try {
+    const filePath = await save({
+      filters: [{ name: "PNG Image", extensions: ["png"] }],
+      defaultPath: `output_${taskID.value}.png`
+    });
+
+    if (filePath) {
+      await invoke("save_result_image", {
+        taskId: taskID.value,
+        outputPath: filePath
+      });
+      statusMsg.value = `Saved to ${filePath}`;
+    }
+  } catch (err) {
+    statusMsg.value = `Save failed: ${err}`;
+  }
 }
 </script>
 
 <template>
   <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
+    <h1>KawaiiSR - 超分辨率工具</h1>
 
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
+    <div class="card">
+      <div class="row">
+        <input v-model="inputPath" placeholder="选择或输入图片路径..." readonly @click="selectFile" />
+        <button @click="selectFile">浏览</button>
+      </div>
+
+      <div class="row" style="margin-top: 10px;">
+        <label>放大倍数: </label>
+        <select v-model.number="scaleFactor">
+          <option :value="2">2x</option>
+          <option :value="4">4x</option>
+        </select>
+        <button @click="startSR" :disabled="isProcessing" style="margin-left: 10px;">
+          {{ isProcessing ? "运行中..." : "开始转换" }}
+        </button>
+      </div>
     </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
+    <div class="status-bar">
+      {{ statusMsg }}
+    </div>
+
+    <div v-if="resultImageSrc" class="result-container">
+      <h2>处理结果:</h2>
+      <img :src="resultImageSrc" alt="Super-resolution result" class="preview-img" />
+      <div class="actions">
+        <button @click="saveResult">保存图片</button>
+      </div>
+    </div>
   </main>
 </template>
 
 <style scoped>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
+.container {
+  max-width: 800px;
+  margin: 0 auto;
 }
 
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #249b73);
+.card {
+  padding: 20px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
 }
 
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+input {
+  flex: 1;
+}
+
+.status-bar {
+  padding: 10px;
+  background: #eee;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.result-container {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.preview-img {
+  max-width: 100%;
+  max-height: 500px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+
+.actions {
+  margin-top: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .card {
+    background: #333;
+  }
+  .status-bar {
+    background: #444;
+  }
+}
 </style>
 <style>
 :root {
