@@ -47,11 +47,11 @@ struct ResultCollectorInner {
 
 impl ResultCollectorInner {
     fn execute(&mut self) {
-        println!("[ResultCollector] Started");
+        tracing::info!("[ResultCollector] Started");
 
         while let Ok(image_info) = self.result_rx.recv() {
             let task_id = image_info.task_id;
-            println!(
+            tracing::info!(
                 "[ResultCollector] Received result for task {} with shape: {:?}",
                 task_id,
                 image_info.image_data.shape()
@@ -77,9 +77,9 @@ impl ResultCollectorInner {
                 if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
                     let filename = format!("output_{}.png", task_id);
                     if let Err(e) = img.save(&filename) {
-                        eprintln!("[ResultCollector] Failed to save debug image {}: {}", filename, e);
+                        tracing::error!("[ResultCollector] Failed to save debug image {}: {}", filename, e);
                     } else {
-                        println!("[ResultCollector] Debug image saved to {}", filename);
+                        tracing::info!("[ResultCollector] Debug image saved to {}", filename);
                     }
                 }
             }
@@ -93,12 +93,12 @@ impl ResultCollectorInner {
                 let handle_lock = app_handle_clone.lock().await;
                 if let Some(handle) = &*handle_lock {
                     if let Err(e) = handle.emit("sr-task-completed", task_id) {
-                        eprintln!("[ResultCollector] Failed to emit event: {}", e);
+                        tracing::error!("[ResultCollector] Failed to emit event: {}", e);
                     }
                 }
             });
         }
 
-        println!("[ResultCollector] Stopped");
+        tracing::info!("[ResultCollector] Stopped");
     }
 }

@@ -46,7 +46,7 @@ struct ImageStitcherInner {
 
 impl ImageStitcherInner {
     fn execute(&mut self) {
-        println!("[ImageStitcher] Started");
+        tracing::info!("[ImageStitcher] Started");
         while let Ok(stitcher_info) = self.onnx_rx.recv() {
             let batch_size = stitcher_info.stitched_data.shape()[0];
             
@@ -108,12 +108,12 @@ impl ImageStitcherInner {
                     };
                     
                     if let Err(e) = self.manager_tx.send(image_info) {
-                        eprintln!("[ImageStitcher] Failed to send result to manager: {}", e);
+                        tracing::error!("[ImageStitcher] Failed to send result to manager: {}", e);
                     }
                 }
             }
         }
         
-        println!("[ImageStitcher] Stopped");
+        tracing::info!("[ImageStitcher] Stopped");
     }
 }

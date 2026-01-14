@@ -39,13 +39,13 @@ struct TensorBatcherInner {
 
 impl TensorBatcherInner {
     fn execute(&mut self) {
-        println!("[TensorBatcher] Started");
+        tracing::info!("[TensorBatcher] Started");
         
         // 从管道接收切片数据，进行批处理
         // 当前简化版本：每次只处理一个切片，不进行批合并
         // TODO: 未来可以实现真正的批处理（收集多个切片组成更大的batch）
         while let Ok(batcher_info) = self.tiler_rx.recv() {
-            println!(
+            tracing::info!(
                 "[TensorBatcher] Processing task {} tile {} with shape: {:?}",
                 batcher_info.task_id,
                 batcher_info.tile_index,
@@ -64,11 +64,11 @@ impl TensorBatcherInner {
             };
             
             if let Err(e) = self.onnx_tx.send(onnx_info) {
-                eprintln!("[TensorBatcher] Failed to send to ONNX session: {}", e);
+                tracing::error!("[TensorBatcher] Failed to send to ONNX session: {}", e);
                 break;
             }
         }
         
-        println!("[TensorBatcher] Stopped");
+        tracing::info!("[TensorBatcher] Stopped");
     }
 }

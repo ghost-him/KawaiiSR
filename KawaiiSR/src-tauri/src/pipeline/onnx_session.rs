@@ -48,29 +48,29 @@ struct OnnxSessionInner {
 
 impl OnnxSessionInner {
     fn execute(&mut self) {
-        println!("[OnnxSession] Started");
+        tracing::info!("[OnnxSession] Started");
         
         // 1. 初始化 ONNX 模型
         if let Err(e) = self.initialize_model() {
-            eprintln!("[OnnxSession] Failed to initialize model: {:?}", e);
+            tracing::error!("[OnnxSession] Failed to initialize model: {:?}", e);
             return;
         }
         
         // 2. 接收数据并进行推理
         while let Ok(onnx_info) = self.batcher_rx.recv() {
-            println!(
+            tracing::info!(
                 "[OnnxSession] Processing batch with {} tiles, shape: {:?}",
                 onnx_info.task_id.len(),
                 onnx_info.batch_data.shape()
             );
             
             if let Err(e) = self.process_batch(onnx_info) {
-                eprintln!("[OnnxSession] Failed to process batch: {:?}", e);
+                tracing::error!("[OnnxSession] Failed to process batch: {:?}", e);
                 // 继续处理下一批，不中断整个流程
             }
         }
         
-        println!("[OnnxSession] Stopped");
+        tracing::info!("[OnnxSession] Stopped");
     }
     
     fn initialize_model(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -80,13 +80,13 @@ impl OnnxSessionInner {
             model_path = cwd.join("src-tauri/onnx/kawaii_sr.onnx");
         }
         
-        println!("[OnnxSession] Loading model from: {:?}", model_path);
+        tracing::info!("[OnnxSession] Loading model from: {:?}", model_path);
         if !model_path.exists() {
             return Err(format!("Model not found at {:?}", model_path).into());
         }
         
         let session = {
-            println!("[OnnxSession] Attempting to load with DirectML...");
+            tracing::info!("[OnnxSession] Attempting to load with DirectML...");
             match Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::All)?
                 .with_execution_providers([DirectMLExecutionProvider::default().build()])?
@@ -94,11 +94,11 @@ impl OnnxSessionInner {
                 .commit_from_file(&model_path)
             {
                 Ok(s) => {
-                    println!("[OnnxSession] ✓ Model loaded with DirectML");
+                    tracing::info!("[OnnxSession] ✓ Model loaded with DirectML");
                     s
                 }
                 Err(e) => {
-                    eprintln!("[OnnxSession] ✗ DirectML failed: {:?}, falling back to CPU", e);
+                    tracing::error!("[OnnxSession] ✗ DirectML failed: {:?}, falling back to CPU", e);
                     Session::builder()?
                         .with_optimization_level(GraphOptimizationLevel::All)?
                         .with_parallel_execution(true)?
@@ -124,7 +124,7 @@ impl OnnxSessionInner {
             .ok_or("Failed to get output 'output'")?;
         let (output_shape, output_data) = output_value.try_extract_tensor::<f32>()?;
         
-        println!("[OnnxSession] Inference completed, output shape: {:?}", output_shape);
+        tracing::info!("[OnnxSession] Inference completed, output shape: {:?}", output_shape);
         
         // 构建输出数据
         let out_n = output_shape[0] as usize;

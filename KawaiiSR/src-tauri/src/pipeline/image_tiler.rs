@@ -41,11 +41,11 @@ struct ImageTilerInner {
 
 impl ImageTilerInner {
     fn execute(&mut self) {
-        println!("[ImageTiler] Started");
+        tracing::info!("[ImageTiler] Started");
         
         // 从管道接收图片数据进行切片
         while let Ok(tiler_info) = self.manager_rx.recv() {
-            println!(
+            tracing::info!(
                 "[ImageTiler] Processing task {} with image shape: {:?}",
                 tiler_info.task_id,
                 tiler_info.image_data.shape()
@@ -87,13 +87,13 @@ impl ImageTilerInner {
                 };
                 
                 if let Err(e) = self.batcher_tx.send(batcher_info) {
-                    eprintln!("[ImageTiler] Failed to send to batcher: {}", e);
+                    tracing::error!("[ImageTiler] Failed to send to batcher: {}", e);
                     break;
                 }
             }
         }
         
-        println!("[ImageTiler] Stopped");
+        tracing::info!("[ImageTiler] Stopped");
     }
 }
 

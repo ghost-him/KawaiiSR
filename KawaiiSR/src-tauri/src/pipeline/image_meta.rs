@@ -6,6 +6,6 @@ pub struct ImageMeta {
     pub original_width: usize,
     // 图片原始高度
     pub original_height: usize,
+    // 放大的倍数（当前没用，由模型训练时的参数决定）
     pub scale_factor: u32,
-
 }
