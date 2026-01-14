@@ -6,5 +6,6 @@ pub struct ImageMeta {
     pub original_width: usize,
     // 图片原始高度
     pub original_height: usize,
+    pub scale_factor: u32,
 
 }

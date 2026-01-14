@@ -1,9 +1,11 @@
-use std::{sync::Arc, collections::HashMap};
+use std::sync::Arc;
+use dashmap::DashMap;
 use crate::id_generator::IDGenerator;
 use image::GenericImageView;
 use ndarray::{Array3, Array4};
-use crossbeam_channel::{Sender, Receiver, unbounded};
-use tauri::{async_runtime::Mutex, AppHandle, Emitter};
+use crate::pipeline::result_collector::ResultCollector;
+use crossbeam_channel::{Sender, unbounded};
+use tauri::{async_runtime::Mutex, AppHandle};
 use crate::pipeline::{ 
     image_stitcher::ImageStitcher, 
     image_tiler::{ImageTiler, TilerInfo}, 
@@ -18,8 +20,6 @@ pub enum ModelName {
     #[default]
     KawaiiSR,
 }
-
-
 
 
 /// 用于对外表示的信息，
@@ -82,80 +82,6 @@ impl SRManager {
     }
 }
 
-pub struct ResultCollector {
-    _handle: std::thread::JoinHandle<()>,
-    app_handle_store: Arc<Mutex<Option<AppHandle>>>,
-}
-
-impl ResultCollector {
-    pub fn new(
-        result_rx: Receiver<ImageInfo>,
-        results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
-        app_handle: Option<AppHandle>,
-    ) -> Self {
-        let app_handle_store = Arc::new(Mutex::new(app_handle));
-        let app_handle_store_inner = app_handle_store.clone();
-
-        let mut inner = ResultCollectorInner {
-            result_rx,
-            results,
-            app_handle: app_handle_store_inner,
-        };
-
-        let handle = std::thread::spawn(move || {
-            inner.execute();
-        });
-
-        Self { _handle: handle, app_handle_store }
-    }
-
-    pub async fn set_app_handle(&self, handle: AppHandle) {
-        let mut store = self.app_handle_store.lock().await;
-        *store = Some(handle);
-    }
-}
-
-struct ResultCollectorInner {
-    result_rx: Receiver<ImageInfo>,
-    results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
-    app_handle: Arc<Mutex<Option<AppHandle>>>,
-}
-
-impl ResultCollectorInner {
-    fn execute(&mut self) {
-        println!("[ResultCollector] Started");
-
-        while let Ok(image_info) = self.result_rx.recv() {
-            let task_id = image_info.task_id;
-            println!(
-                "[ResultCollector] Received result for task {} with shape: {:?}",
-                task_id,
-                image_info.image_data.shape()
-            );
-
-            // 1. 保存到内部存储
-            let results_clone = self.results.clone();
-            tauri::async_runtime::block_on(async move {
-                let mut results = results_clone.lock().await;
-                results.insert(task_id, image_info);
-            });
-
-            // 2. 交互外部模块: 通知前端任务完成
-            let app_handle_clone = self.app_handle.clone();
-            tauri::async_runtime::block_on(async move {
-                let handle_lock = app_handle_clone.lock().await;
-                if let Some(handle) = &*handle_lock {
-                    if let Err(e) = handle.emit("sr-task-completed", task_id) {
-                        eprintln!("[ResultCollector] Failed to emit event: {}", e);
-                    }
-                }
-            });
-        }
-
-        println!("[ResultCollector] Stopped");
-    }
-}
-
 pub struct SRManagerInner {
     // 将图片分割
     pub image_tiler: ImageTiler,
@@ -170,7 +96,7 @@ pub struct SRManagerInner {
     // 向 Tiler 发送数据的通道 (manager 只维护这个)
     pub tiler_tx: Sender<TilerInfo>,
     // 任务结果存储 (Key: task_id)
-    pub results: Arc<Mutex<HashMap<usize, ImageInfo>>>,
+    pub results: Arc<DashMap<usize, ImageInfo>>,
     // 结果收集器 (后台线程监控)
     pub result_collector: ResultCollector,
 }
@@ -195,7 +121,7 @@ impl Default for SRManagerInner {
         let (stitcher_tx_manager, stitcher_rx_manager) = unbounded();
 
         // 创建各组件
-        let results = Arc::new(Mutex::new(HashMap::new()));
+        let results = Arc::new(DashMap::new());
         
         let image_tiler = ImageTiler::new(manager_rx_tiler, tiler_tx_batcher);
         let tensor_batcher = TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx);
@@ -228,6 +154,7 @@ impl SRManagerInner {
         let image_meta = Arc::new(ImageMeta {
             original_width: width as usize,
             original_height: height as usize,
+            scale_factor: sr_info.scale_factor,
         });
 
 
@@ -255,8 +182,7 @@ impl SRManagerInner {
 
     // 获取该图片的结果
     pub async fn get_result(&self, task_id: usize) -> Option<ImageInfo> {
-        let results = self.results.lock().await;
-        results.get(&task_id).cloned()
+        self.results.get(&task_id).map(|entry| entry.value().clone())
     }
 }
 
