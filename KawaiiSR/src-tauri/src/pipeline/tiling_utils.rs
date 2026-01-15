@@ -19,10 +19,10 @@ impl TilingInfo {
         // 1. 添加 64px 边缘后的尺寸
         let border_h = h + BORDER * 2;
         let border_w = w + BORDER * 2;
-        
+
         // 2. 步长 = TILE_SIZE - OVERLAP
         let stride = TILE_SIZE - OVERLAP;
-        
+
         // 3. 计算需要的 padding 使得步进能覆盖所有像素
         // 也就是满足 (rows - 1) * stride + TILE_SIZE >= border_h
         // 即 rows - 1 >= (border_h - TILE_SIZE + stride - 1) / stride
@@ -31,16 +31,16 @@ impl TilingInfo {
         } else {
             ((border_h - TILE_SIZE + stride - 1) / stride) + 1
         };
-        
+
         let cols = if border_w <= TILE_SIZE {
             1
         } else {
             ((border_w - TILE_SIZE + stride - 1) / stride) + 1
         };
-        
+
         let padded_h = (rows - 1) * stride + TILE_SIZE;
         let padded_w = (cols - 1) * stride + TILE_SIZE;
-        
+
         Self {
             original_h: h,
             original_w: w,

@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use tauri::async_runtime::Mutex;
-use tauri::AppHandle;
 use crate::sr_manager::ImageInfo;
 use crossbeam_channel::Receiver;
 use dashmap::DashMap;
+use std::sync::Arc;
+use tauri::async_runtime::Mutex;
+use tauri::AppHandle;
 use tauri::Emitter;
 
 pub struct ResultCollector {
@@ -30,7 +30,10 @@ impl ResultCollector {
             inner.execute();
         });
 
-        Self { _handle: handle, app_handle_store }
+        Self {
+            _handle: handle,
+            app_handle_store,
+        }
     }
 
     pub async fn set_app_handle(&self, handle: AppHandle) {
@@ -57,32 +60,32 @@ impl ResultCollectorInner {
                 image_info.image_data.shape()
             );
 
-            // 0. 调试: 保存到本地硬盘
-            {
-                let data = &image_info.image_data;
-                let shape = data.shape();
-                let height = shape[2];
-                let width = shape[3];
-                
-                let mut pixels = Vec::with_capacity(height * width * 3);
-                for y in 0..height {
-                    for x in 0..width {
-                        for c in 0..3 {
-                            let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
-                            pixels.push(val);
-                        }
-                    }
-                }
-                
-                if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
-                    let filename = format!("output_{}.png", task_id);
-                    if let Err(e) = img.save(&filename) {
-                        tracing::error!("[ResultCollector] Failed to save debug image {}: {}", filename, e);
-                    } else {
-                        tracing::info!("[ResultCollector] Debug image saved to {}", filename);
-                    }
-                }
-            }
+            // // 0. 调试: 保存到本地硬盘
+            // {
+            //     let data = &image_info.image_data;
+            //     let shape = data.shape();
+            //     let height = shape[2];
+            //     let width = shape[3];
+
+            //     let mut pixels = Vec::with_capacity(height * width * 3);
+            //     for y in 0..height {
+            //         for x in 0..width {
+            //             for c in 0..3 {
+            //                 let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
+            //                 pixels.push(val);
+            //             }
+            //         }
+            //     }
+
+            //     if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
+            //         let filename = format!("output_{}.png", task_id);
+            //         if let Err(e) = img.save(&filename) {
+            //             tracing::error!("[ResultCollector] Failed to save debug image {}: {}", filename, e);
+            //         } else {
+            //             tracing::info!("[ResultCollector] Debug image saved to {}", filename);
+            //         }
+            //     }
+            // }
 
             // 1. 保存到内部存储
             self.results.insert(task_id, image_info);

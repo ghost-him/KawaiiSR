@@ -23,8 +23,7 @@ pub fn init_logging(app_dir: PathBuf) {
     // Leak the guard to keep it alive for the duration of the program
     Box::leak(Box::new(_guard));
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,ort=warn,onnxruntime=warn"));
+    let filter = EnvFilter::new("info,ort=warn,onnxruntime=warn");
 
     tracing_subscriber::registry()
         .with(filter)
