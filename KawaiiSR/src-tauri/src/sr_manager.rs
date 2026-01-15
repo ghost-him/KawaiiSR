@@ -37,6 +37,11 @@ pub struct SRInfo {
     pub output_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskMetadata {
+    pub total_tiles: usize,
+}
+
 /// 对内表示的信息，可见范围：SRManager 以及 image_stitcher
 /// 表示image_stticher工作结束，传回给SRManager的信息
 #[derive(Clone)]
@@ -74,10 +79,17 @@ impl SRManager {
         inner.get_result(task_id).await
     }
 
+    // 获取任务元数据
+    pub async fn get_task_metadata(&self, task_id: usize) -> Option<TaskMetadata> {
+        let inner = self.inner.lock().await;
+        inner.task_metadata.get(&task_id).map(|v| v.clone())
+    }
+
     // 设置 AppHandle 以便发射事件
     pub async fn set_app_handle(&self, handle: AppHandle) {
         let inner = self.inner.lock().await;
-        inner.result_collector.set_app_handle(handle).await;
+        inner.result_collector.set_app_handle(handle.clone()).await;
+        inner.image_stitcher.set_app_handle(handle).await;
     }
 }
 
@@ -96,6 +108,8 @@ pub struct SRManagerInner {
     pub tiler_tx: Sender<TilerInfo>,
     // 任务结果存储 (Key: task_id)
     pub results: Arc<DashMap<usize, ImageInfo>>,
+    // 任务元数据存储 (Key: task_id)
+    pub task_metadata: DashMap<usize, TaskMetadata>,
     // 结果收集器 (后台线程监控)
     pub result_collector: ResultCollector,
 }
@@ -138,6 +152,7 @@ impl Default for SRManagerInner {
             id_generator: Arc::new(IDGenerator::default()),
             tiler_tx: manager_tx_tiler,
             results,
+            task_metadata: DashMap::new(),
             result_collector,
         }
     }
@@ -165,6 +180,15 @@ impl SRManagerInner {
         }
 
         let current_task_id = self.id_generator.generate_id();
+
+        // 计算并存储元数据
+        let info = crate::pipeline::tiling_utils::TilingInfo::new(height as usize, width as usize);
+        self.task_metadata.insert(
+            current_task_id,
+            TaskMetadata {
+                total_tiles: info.total_tiles(),
+            },
+        );
 
         // 3. 封装信息并发送给 image_tiler
         let tiler_info = TilerInfo {

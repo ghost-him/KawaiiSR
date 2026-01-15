@@ -2,8 +2,11 @@ use crate::pipeline::tiling_utils::{TilingInfo, BORDER, OVERLAP, TILE_SIZE};
 use crate::{pipeline::image_meta::ImageMeta, sr_manager::ImageInfo};
 use crossbeam_channel::{Receiver, Sender};
 use ndarray::{s, Array3, Array4, Axis};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::async_runtime::Mutex;
+use tauri::{AppHandle, Emitter};
 
 pub struct StitcherInfo {
     pub task_id: Vec<usize>,
@@ -12,23 +15,43 @@ pub struct StitcherInfo {
     pub image_meta: Vec<Arc<ImageMeta>>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct ProgressPayload {
+    pub task_id: usize,
+    pub completed_tiles: usize,
+    pub total_tiles: usize,
+}
+
 pub struct ImageStitcher {
     _handle: std::thread::JoinHandle<()>,
+    app_handle_store: Arc<Mutex<Option<AppHandle>>>,
 }
 
 impl ImageStitcher {
     pub fn new(onnx_rx: Receiver<StitcherInfo>, manager_tx: Sender<ImageInfo>) -> Self {
+        let app_handle_store = Arc::new(Mutex::new(None));
+        let app_handle_store_inner = app_handle_store.clone();
+
         let mut inner = ImageStitcherInner {
             onnx_rx,
             manager_tx,
             tasks: HashMap::new(),
+            app_handle: app_handle_store_inner,
         };
 
         let handle = std::thread::spawn(move || {
             inner.execute();
         });
 
-        Self { _handle: handle }
+        Self {
+            _handle: handle,
+            app_handle_store,
+        }
+    }
+
+    pub async fn set_app_handle(&self, handle: AppHandle) {
+        let mut store = self.app_handle_store.lock().await;
+        *store = Some(handle);
     }
 }
 
@@ -42,6 +65,7 @@ struct ImageStitcherInner {
     onnx_rx: Receiver<StitcherInfo>,
     manager_tx: Sender<ImageInfo>,
     tasks: HashMap<usize, TaskProgress>,
+    app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
 impl ImageStitcherInner {
@@ -96,6 +120,25 @@ impl ImageStitcherInner {
                 acc_slice.assign(&cropped_tile);
 
                 progress.received_count += 1;
+
+                // 发送进度更新
+                let current_progress = progress.received_count;
+                let total_tiles = progress.info.total_tiles();
+                let app_handle_clone = self.app_handle.clone();
+
+                tauri::async_runtime::block_on(async move {
+                    let handle_lock = app_handle_clone.lock().await;
+                    if let Some(handle) = &*handle_lock {
+                        let payload = ProgressPayload {
+                            task_id,
+                            completed_tiles: current_progress,
+                            total_tiles,
+                        };
+                        if let Err(e) = handle.emit("sr-task-progress", payload) {
+                            tracing::error!("[ImageStitcher] Failed to emit progress: {}", e);
+                        }
+                    }
+                });
 
                 // 检查是否完成
                 if progress.received_count == progress.info.total_tiles() {

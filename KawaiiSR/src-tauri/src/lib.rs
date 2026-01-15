@@ -5,13 +5,25 @@ pub mod pipeline;
 pub mod sr_manager;
 
 use crate::app_state::AppState;
-use crate::sr_manager::{ModelName, SRInfo};
+use crate::sr_manager::{ModelName, SRInfo, TaskMetadata};
 use std::sync::Arc;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+async fn get_task_metadata(
+    state: tauri::State<'_, Arc<AppState>>,
+    task_id: usize,
+) -> Result<TaskMetadata, String> {
+    let manager = state.sr_pipline.clone();
+    manager
+        .get_task_metadata(task_id)
+        .await
+        .ok_or_else(|| format!("Metadata for task {} not found", task_id))
 }
 
 #[tauri::command]
@@ -133,7 +145,8 @@ pub fn run() {
             greet,
             run_super_resolution,
             get_result_image,
-            save_result_image
+            save_result_image,
+            get_task_metadata
         ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {

@@ -6,6 +6,8 @@ export interface Task {
     scaleFactor: number;
     status: 'pending' | 'processing' | 'completed' | 'failed';
     progress: number;
+    completedTiles?: number;
+    totalTiles?: number;
     resultImageSrc?: string;
     startTime: number;
 }

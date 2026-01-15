@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, h } from "vue";
+import { onMounted, onUnmounted, h, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -15,7 +15,18 @@ import type { ImageRenderToolbarProps } from 'naive-ui'
 const message = useMessage();
 const { tasks, activeTask, addTask, updateTask, selectTask } = useTasks();
 
+interface ProgressPayload {
+  task_id: number;
+  completed_tiles: number;
+  total_tiles: number;
+}
+
+interface TaskMetadata {
+  total_tiles: number;
+}
+
 let unlisten: UnlistenFn | null = null;
+let unlistenProgress: UnlistenFn | null = null;
 
 onMounted(async () => {
   unlisten = await listen<number>("sr-task-completed", async (event) => {
@@ -25,10 +36,21 @@ onMounted(async () => {
     await fetchResultImage(completedTaskId);
     message.success(`任务 ${completedTaskId} 已完成`);
   });
+
+  unlistenProgress = await listen<ProgressPayload>("sr-task-progress", (event) => {
+    const { task_id, completed_tiles, total_tiles } = event.payload;
+    const progress = Math.floor((completed_tiles / total_tiles) * 100);
+    updateTask(task_id, { 
+      progress, 
+      completedTiles: completed_tiles, 
+      totalTiles: total_tiles 
+    });
+  });
 });
 
 onUnmounted(() => {
   if (unlisten) unlisten();
+  if (unlistenProgress) unlistenProgress();
 });
 
 async function startNewTask() {
@@ -48,6 +70,8 @@ async function startNewTask() {
         scaleFactor: scale
       });
       
+      const metadata = await invoke<TaskMetadata>("get_task_metadata", { taskId: id });
+      
       const newTask: Task = {
         id,
         inputPath,
@@ -55,12 +79,13 @@ async function startNewTask() {
         scaleFactor: scale,
         status: 'processing',
         progress: 0, 
+        completedTiles: 0,
+        totalTiles: metadata.total_tiles,
         startTime: Date.now()
       };
       
       addTask(newTask);
       selectTask(id);
-      simulateProgress(id);
       
     } catch (err) {
       console.error("Failed to start task:", err);
@@ -69,23 +94,26 @@ async function startNewTask() {
   }
 }
 
-function simulateProgress(id: number) {
-  let p = 0;
-  const interval = setInterval(() => {
-    const task = tasks.value.find(t => t.id === id);
-    if (!task || task.status !== 'processing') {
-      clearInterval(interval);
-      return;
+const progressText = computed(() => {
+  if (!activeTask.value) return "";
+  if (activeTask.value.status === 'completed') return '转换已完成，结果已就绪';
+  if (activeTask.value.status === 'failed') return '处理失败';
+  
+  if (activeTask.value.status === 'processing') {
+    const t = activeTask.value;
+    if (t.completedTiles !== undefined && t.totalTiles !== undefined) {
+      const elapsed = (Date.now() - t.startTime) / 1000;
+      let etaText = "";
+      if (t.completedTiles > 0) {
+        const eta = (elapsed / t.completedTiles) * (t.totalTiles - t.completedTiles);
+        etaText = ` | 预计剩余时间: ${Math.ceil(eta)}s`;
+      }
+      return `正在处理分块: ${t.completedTiles}/${t.totalTiles} (已用时: ${Math.ceil(elapsed)}s${etaText})`;
     }
-    if (p < 90) {
-      p += Math.random() * 5;
-    } else {
-      p += Math.random() * 0.5;
-    }
-    if (p > 99) p = 99;
-    updateTask(id, { progress: Math.floor(p) });
-  }, 500);
-}
+    return '正在进行超分辨率处理...';
+  }
+  return '准备中';
+});
 
 async function fetchResultImage(id: number) {
   try {
@@ -247,7 +275,7 @@ function statusType(status: string) {
             :color="activeTask.status === 'completed' ? '#18a058' : '#2080f0'"
           />
           <div style="margin-top: 12px; color: #666; font-size: 14px;">
-            {{ activeTask.status === 'completed' ? '转换已完成，结果已就绪' : (activeTask.status === 'processing' ? '正在进行超分辨率处理...' : '准备中') }}
+            {{ progressText }}
           </div>
         </div>
         
