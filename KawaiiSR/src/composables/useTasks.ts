@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue';
+import { invoke } from "@tauri-apps/api/core";
 import type { Task } from '../types';
 
 const tasks = ref<Task[]>([]);
@@ -21,8 +22,20 @@ export function useTasks() {
         }
     }
 
-    function selectTask(id: number) {
+    function selectTask(id: number | null) {
         activeTaskId.value = id;
+    }
+
+    async function fetchResultImage(id: number) {
+        try {
+            const bytes = await invoke<Uint8Array>("get_result_image", { taskId: id });
+            const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+            const url = URL.createObjectURL(blob);
+            updateTask(id, { resultImageSrc: url });
+        } catch (err) {
+            console.error(`Failed to fetch image for task ${id}:`, err);
+            updateTask(id, { status: 'failed' });
+        }
     }
 
     return {
@@ -31,6 +44,7 @@ export function useTasks() {
         activeTask,
         addTask,
         updateTask,
-        selectTask
+        selectTask,
+        fetchResultImage
     };
 }
