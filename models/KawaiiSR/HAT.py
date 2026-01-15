@@ -115,8 +115,9 @@ class CAB(nn.Module):
 class WaveletTransform2D(nn.Module):
     """Two-dimensional wavelet transform with CNN-like stride-2 behavior."""
 
-    def __init__(self, inverse: bool = False, wavelet: str = "haar", dtype: torch.dtype = torch.float32):
+    def __init__(self, inverse: bool = False, wavelet: str = "haar", dtype: torch.dtype = torch.float32, channels: int = None):
         super().__init__()
+        self.channels = channels
 
         wavelet_filters = pywt.Wavelet(wavelet)
 
@@ -154,14 +155,18 @@ class WaveletTransform2D(nn.Module):
     def forward(self, data: torch.Tensor, original_size=None):  # noqa: D401 - same signature as original
         if not self.inverse:
             b, c, _, _ = data.shape
+            if self.channels is not None:
+                c = self.channels
             filters = self.filters.to(dtype=data.dtype, device=data.device).repeat(c, 1, 1, 1)
             dec_res = F.conv2d(data, filters, stride=2, groups=c, padding=self.padding)
-            dec_res = dec_res.view(b, 4, c, dec_res.shape[-2], dec_res.shape[-1])
+            dec_res = dec_res.view(-1, 4, c, dec_res.shape[-2], dec_res.shape[-1])
             return dec_res.unbind(dim=1)
 
         LL, LH, HL, HH = data
         b, c, h, w = LL.shape
-        coeffs = torch.stack((LL, LH, HL, HH), dim=1).view(b, -1, h, w)
+        if self.channels is not None:
+            c = self.channels
+        coeffs = torch.stack((LL, LH, HL, HH), dim=1).view(-1, 4 * c, h, w)
         filters = self.filters.to(dtype=coeffs.dtype, device=coeffs.device).repeat(c, 1, 1, 1)
         rec_res = F.conv_transpose2d(coeffs, filters, stride=2, groups=c, padding=self.padding)
 
@@ -185,8 +190,8 @@ class ResidualBlock(nn.Module):
         self.last_conv = BigConv(in_channels=out_channels * (num_layers + 1), out_channels=out_channels)
         self.cab = CAB(num_feat=out_channels, squeeze_factor=max(out_channels // 8, 1))
 
-        self.dwt = WaveletTransform2D(wavelet="sym4")
-        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True)
+        self.dwt = WaveletTransform2D(wavelet="sym4", channels=out_channels)
+        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True, channels=out_channels)
 
         self.lf_branch = nn.Sequential(
             BigConv(in_channels=out_channels, out_channels=out_channels),
@@ -254,7 +259,7 @@ def window_partition(x, window_size):
         windows: (num_windows*b, window_size, window_size, c)
     """
     b, h, w, c = x.shape
-    x = x.view(b, h // window_size, window_size, w // window_size, window_size, c)
+    x = x.view(-1, h // window_size, window_size, w // window_size, window_size, c)
     windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, c)
     return windows
 
@@ -270,9 +275,10 @@ def window_reverse(windows, window_size, h, w):
     Returns:
         x: (b, h, w, c)
     """
-    b = windows.shape[0] // (h // window_size * w // window_size)
-    x = windows.view(b, h // window_size, w // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(b, h, w, -1)
+    # b = windows.shape[0] // (h // window_size * w // window_size)
+    c = windows.shape[-1]
+    x = windows.view(-1, h // window_size, w // window_size, window_size, window_size, c)
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, h, w, c)
     return x
 
 class WindowAttention(nn.Module):
@@ -414,11 +420,11 @@ class HAB(nn.Module):
 
         shortcut = x
         x = self.norm1(x)
-        x = x.view(b, h, w, c)
+        x = x.view(-1, h, w, c)
 
         # Conv_X
         conv_x = self.conv_block(x.permute(0, 3, 1, 2))
-        conv_x = conv_x.permute(0, 2, 3, 1).contiguous().view(b, h * w, c)
+        conv_x = conv_x.permute(0, 2, 3, 1).contiguous().view(-1, h * w, c)
 
         # cyclic shift
         if self.shift_size > 0:
@@ -444,7 +450,7 @@ class HAB(nn.Module):
             attn_x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             attn_x = shifted_x
-        attn_x = attn_x.view(b, h * w, c)
+        attn_x = attn_x.view(-1, h * w, c)
 
         # FFN
         x = shortcut + self.drop_path(attn_x) + conv_x * self.conv_scale
@@ -497,10 +503,10 @@ class OCAB(nn.Module):
 
         shortcut = x
         x = self.norm1(x)
-        x = x.view(b, h, w, c)
+        x = x.view(-1, h, w, c)
 
         # QKV 生成和分离，与原版相同
-        qkv = self.qkv(x).reshape(b, h, w, 3, c).permute(3, 0, 4, 1, 2) # 3, b, c, h, w
+        qkv = self.qkv(x).reshape(-1, h, w, 3, c).permute(3, 0, 4, 1, 2) # 3, b, c, h, w
         q = qkv[0].permute(0, 2, 3, 1) # b, h, w, c
         kv = torch.cat((qkv[1], qkv[2]), dim=1) # b, 2*c, h, w
 
@@ -544,7 +550,7 @@ class OCAB(nn.Module):
         # 后续部分与原版相同
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, self.dim)
         x = window_reverse(attn_windows, self.window_size, h, w)
-        x = x.view(b, h * w, self.dim)
+        x = x.view(-1, h * w, self.dim)
 
         x = self.proj(x) + shortcut
         x = x + self.mlp(self.norm2(x))
@@ -773,7 +779,7 @@ class PatchUnEmbed(nn.Module):
         self.embed_dim = embed_dim
 
     def forward(self, x, x_size):
-        x = x.transpose(1, 2).contiguous().view(x.shape[0], self.embed_dim, x_size[0], x_size[1])  # b Ph*Pw c
+        x = x.transpose(1, 2).contiguous().view(-1, self.embed_dim, x_size[0], x_size[1])  # b Ph*Pw c
         return x
 
 class HAT(nn.Module):

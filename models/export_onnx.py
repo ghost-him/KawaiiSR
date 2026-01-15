@@ -3,6 +3,7 @@ import os
 import sys
 import yaml
 import torch
+import torch.export
 import torch.onnx
 import torch.nn as nn
 
@@ -95,7 +96,7 @@ def build_model(model_config, input_size, device):
 
 
 def export_onnx(config_path, checkpoint_path, input_size, output_path):
-    device = 'cpu'
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     model_config = load_config(config_path)
@@ -126,21 +127,30 @@ def export_onnx(config_path, checkpoint_path, input_size, output_path):
     dummy_input = torch.randn(1, model_config.get('in_channels', 3), export_size, export_size, device=device)
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    print(f"Exporting to {output_path} (fixed input {export_size}x{export_size})...")
     try:
         with torch.inference_mode():
+            print(f"Exporting to {output_path} (input {export_size}x{export_size}) using legacy TorchScript exporter for DirectML compatibility...")
+
+            # 配置动态 Batch
+            dynamic_axes = {
+                'input': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            }
+            
             torch.onnx.export(
                 model,
-                dummy_input,
+                (dummy_input,),  # 必须以 tuple 形式传入 args
                 output_path,
-                opset_version=17,
-                do_constant_folding=True,
                 export_params=True,
-                input_names=['input'],
+                opset_version=20,
+                do_constant_folding=True,
+                input_names=['input'], # KawaiiSR.forward(x) -> 这里的名字对应 dynamic_axes 的 key
                 output_names=['output'],
-                dynamic_axes=None,  # 固定尺寸导出
+                dynamic_axes=dynamic_axes,
                 verbose=False,
+                dynamo=False # 显式禁用 Dynamo
             )
+            
         print("Export successful!")
     except Exception as e:
         print(f"Export failed: {e}")
