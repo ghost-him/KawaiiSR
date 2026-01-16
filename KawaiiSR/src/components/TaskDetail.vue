@@ -110,7 +110,7 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
 <template>
   <div class="task-detail">
     <div class="header">
-      <h1 style="display: flex; align-items: center; gap: 16px; margin-bottom: 40px; margin-top: 0; font-size: 24px;">
+      <h1 style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px; margin-top: 0; font-size: 24px;">
         任务详情 (ID: {{ task.id }})
         <n-tag :type="statusType(task.status)" round :bordered="false">
           {{ formatStatus(task.status) }}
@@ -128,36 +128,46 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
       </h1>
     </div>
     
-    <n-card :bordered="false" style="margin-bottom: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
-      <n-descriptions label-placement="left" :column="1" label-style="min-width: 100px; color: #666;">
-        <n-descriptions-item label="输入路径">
-          <n-text style="font-family: v-mono, monospace; word-break: break-all;">{{ task.inputPath }}</n-text>
-        </n-descriptions-item>
-        <n-descriptions-item label="已设定倍数">
-          {{ task.scaleFactor }}x
-        </n-descriptions-item>
-      </n-descriptions>
-    </n-card>
-    
-    <div class="progress-section" style="margin-bottom: 48px;">
-      <h4 style="margin-bottom: 16px; margin-top: 0;">处理进度</h4>
-      <n-progress 
-        type="line" 
-        :percentage="task.progress" 
-        :status="task.status === 'failed' ? 'error' : (task.status === 'completed' ? 'success' : 'default')"
-        :height="12"
-        processing
-        indicator-placement="inside"
-        :color="task.status === 'completed' ? '#18a058' : '#2080f0'"
-      />
-      <div style="margin-top: 12px; color: #666; font-size: 14px;">
-        {{ progressText }}
+    <div class="info-grid">
+      <n-card :bordered="false" class="info-card">
+        <n-descriptions label-placement="left" :column="2" label-style="min-width: 100px; color: #666;">
+          <n-descriptions-item label="输入路径">
+            <n-text style="font-family: v-mono, monospace; word-break: break-all;">{{ task.inputPath }}</n-text>
+          </n-descriptions-item>
+          <n-descriptions-item label="倍数">
+            {{ task.scaleFactor }}x
+          </n-descriptions-item>
+        </n-descriptions>
+      </n-card>
+      
+      <div class="progress-section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h4 style="margin: 0;">处理进度</h4>
+          <div style="color: #666; font-size: 13px;">
+            {{ progressText }}
+          </div>
+        </div>
+        <n-progress 
+          type="line" 
+          :percentage="task.progress" 
+          :status="task.status === 'failed' ? 'error' : (task.status === 'completed' ? 'success' : 'default')"
+          :height="10"
+          processing
+          indicator-placement="inside"
+          :color="task.status === 'completed' ? '#18a058' : '#2080f0'"
+        />
       </div>
     </div>
     
     <div class="result-section" v-if="task.originalImageSrc || task.resultImageSrc">
-      <n-card :bordered="false" :title="task.resultImageSrc ? '对比预览 (中间滑块可拖动)' : '原图预览'" size="small" style="border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
-        <div class="image-wrapper" style="background: white; padding: 12px; text-align: center; border-radius: 4px; overflow: hidden;">
+      <n-card 
+        :bordered="false" 
+        :title="task.resultImageSrc ? '对比预览 (中间滑块可拖动)' : '原图预览'" 
+        size="small" 
+        class="result-card"
+        content-style="display: flex; flex-direction: column; overflow: hidden; height: 100%;"
+      >
+        <div class="image-wrapper">
           <ImageCompare 
             v-if="task.resultImageSrc && task.originalImageSrc"
             :before="task.originalImageSrc" 
@@ -167,16 +177,16 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
             v-else-if="task.originalImageSrc"
             :src="task.originalImageSrc" 
             class="pixelated-img"
-            style="max-width: 100%; max-height: 500px;" 
+            style="width: 100%; height: 100%;" 
             object-fit="contain" 
             :render-toolbar="renderToolbar"
           />
         </div>
-        <div v-if="task.resultImageSrc" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
+        <div v-if="task.resultImageSrc" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
           <div style="color: #999; font-size: 12px;">
             左侧: 原图 | 右侧: 超分结果
           </div>
-          <n-button size="tiny" type="primary" secondary @click="saveResult()">
+          <n-button size="medium" type="primary" secondary @click="saveResult()">
             下载完整结果
           </n-button>
         </div>
@@ -186,7 +196,68 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
 </template>
 
 <style scoped>
+.task-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 20px;
+}
+
+.info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.info-card {
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+
+.result-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.result-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  min-height: 0;
+}
+
+:deep(.result-card > .n-card__content) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px !important;
+}
+
+.image-wrapper {
+  flex: 1;
+  background: #f0f0f0;
+  text-align: center;
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;
+}
+
+.pixelated-img {
+  width: 100%;
+  height: 100%;
+}
+
 .pixelated-img :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   image-rendering: -moz-crisp-edges !important;
   image-rendering: -webkit-optimize-contrast !important;
   image-rendering: pixelated !important;

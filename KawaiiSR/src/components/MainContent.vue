@@ -80,7 +80,7 @@ function onTaskCreated() {
       />
     </n-layout-sider>
     
-    <n-layout-content content-style="padding: 48px; background-color: #f9f9f9;">
+    <n-layout-content content-style="padding: 24px; background-color: #f9f9f9; display: flex; flex-direction: column;">
       <CreateTask 
         v-if="isCreating" 
         @task-created="onTaskCreated" 
