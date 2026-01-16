@@ -1,9 +1,10 @@
 use crate::id_generator::IDGenerator;
-use crate::pipeline::image_meta::ImageMeta;
+use crate::pipeline::task_meta::{ImageMeta, TaskType};
 use crate::pipeline::result_collector::ResultCollector;
 use crate::pipeline::{
+    image_preprocessor::{ImagePreprocessor, PreprocessorInfo},
     image_stitcher::ImageStitcher,
-    image_tiler::{ImageTiler, TilerInfo},
+    image_tiler::ImageTiler,
     onnx_session::OnnxSession,
     tensor_batcher::TensorBatcher,
 };
@@ -36,8 +37,9 @@ pub struct SRInfo {
     pub output_path: Option<String>,
 }
 
+// 这个是用于向前端传数据的任务元数据结构体，不是内部使用的
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskMetadata {
+pub struct TaskMetaStruct {
     pub total_tiles: usize,
 }
 
@@ -47,6 +49,8 @@ pub struct TaskMetadata {
 pub struct ImageInfo {
     // 该图片任务的唯一标识符
     pub task_id: usize,
+    // 该流的类型
+    pub task_type: TaskType,
     // 图片的内容 (NCHW 格式)
     pub image_data: Array4<f32>,
     // 图片的元数据
@@ -79,7 +83,7 @@ impl SRManager {
     }
 
     // 获取任务元数据
-    pub async fn get_task_metadata(&self, task_id: usize) -> Option<TaskMetadata> {
+    pub async fn get_task_metadata(&self, task_id: usize) -> Option<TaskMetaStruct> {
         let inner = self.inner.lock().await;
         inner.task_metadata.get(&task_id).map(|v| v.clone())
     }
@@ -99,6 +103,8 @@ impl SRManager {
 }
 
 pub struct SRManagerInner {
+    // 图片预处理器
+    pub image_preprocessor: ImagePreprocessor,
     // 将图片分割
     pub image_tiler: ImageTiler,
     // 将图片合并成一个batch来运行
@@ -109,12 +115,12 @@ pub struct SRManagerInner {
     pub image_stitcher: ImageStitcher,
     // 任务标识符生成器
     pub id_generator: Arc<IDGenerator>,
-    // 向 Tiler 发送数据的通道 (manager 只维护这个)
-    pub tiler_tx: Sender<TilerInfo>,
+    // 向 Preprocessor 发送数据的通道 (manager 只维护这个)
+    pub preprocessor_tx: Sender<PreprocessorInfo>,
     // 任务结果存储 (Key: task_id)
     pub results: Arc<DashMap<usize, ImageInfo>>,
     // 任务元数据存储 (Key: task_id)
-    pub task_metadata: DashMap<usize, TaskMetadata>,
+    pub task_metadata: DashMap<usize, TaskMetaStruct>,
     // 结果收集器 (后台线程监控)
     pub result_collector: ResultCollector,
     // 被取消的任务集
@@ -125,9 +131,11 @@ impl Default for SRManagerInner {
     fn default() -> Self {
         // 创建各 pipeline 之间的通道
 
-        // Manager -> Tiler 的通道 (限制最多同时读取一个图片等待处理)
-        // 改为较大的有界通道，因为现在发送的只是路径，不占内存
-        let (manager_tx_tiler, manager_rx_tiler) = bounded(100);
+        // Manager -> Preprocessor 的通道
+        let (manager_tx_preprocessor, manager_rx_preprocessor) = bounded(100);
+
+        // Preprocessor -> Tiler 的通道 (预处理可能输出多个流，如RGB+Alpha)
+        let (preprocessor_tx_tiler, preprocessor_rx_tiler) = bounded(32);
 
         // Tiler -> Batcher 的通道 (限制 16 个切片在队列中)
         let (tiler_tx_batcher, tiler_rx_batcher) = bounded(16);
@@ -145,7 +153,8 @@ impl Default for SRManagerInner {
         let results = Arc::new(DashMap::new());
         let cancelled_tasks = Arc::new(DashSet::new());
 
-        let image_tiler = ImageTiler::new(manager_rx_tiler, tiler_tx_batcher, cancelled_tasks.clone());
+        let image_preprocessor = ImagePreprocessor::new(manager_rx_preprocessor, preprocessor_tx_tiler, cancelled_tasks.clone());
+        let image_tiler = ImageTiler::new(preprocessor_rx_tiler, tiler_tx_batcher, cancelled_tasks.clone());
         let tensor_batcher = TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx, cancelled_tasks.clone());
         let onnx_session = OnnxSession::new(batcher_rx_onnx, onnx_tx_stitcher, cancelled_tasks.clone());
         let image_stitcher = ImageStitcher::new(onnx_rx_stitcher, stitcher_tx_manager, cancelled_tasks.clone());
@@ -154,12 +163,13 @@ impl Default for SRManagerInner {
         let result_collector = ResultCollector::new(stitcher_rx_manager, results.clone(), cancelled_tasks.clone(), None);
 
         Self {
+            image_preprocessor,
             image_tiler,
             tensor_batcher,
             onnx_session,
             image_stitcher,
             id_generator: Arc::new(IDGenerator::default()),
-            tiler_tx: manager_tx_tiler,
+            preprocessor_tx: manager_tx_preprocessor,
             results,
             task_metadata: DashMap::new(),
             result_collector,
@@ -180,20 +190,20 @@ impl SRManagerInner {
         let info = crate::pipeline::tiling_utils::TilingInfo::new(height as usize, width as usize);
         self.task_metadata.insert(
             current_task_id,
-            TaskMetadata {
+            TaskMetaStruct {
                 total_tiles: info.total_tiles(),
             },
         );
 
-        // 2. 封装信息并发送给 image_tiler，仅传递路径
-        let tiler_info = TilerInfo {
+        // 2. 封装信息并发送给预处理器
+        let preproc_info = PreprocessorInfo {
             task_id: current_task_id,
             input_path: sr_info.input_path.clone(),
             scale_factor: sr_info.scale_factor,
         };
-        self.tiler_tx
-            .send(tiler_info)
-            .map_err(|e| anyhow::anyhow!("Failed to send to tiler: {}", e))?;
+        self.preprocessor_tx
+            .send(preproc_info)
+            .map_err(|e| anyhow::anyhow!("Failed to send to preprocessor: {}", e))?;
 
         Ok(current_task_id)
     }

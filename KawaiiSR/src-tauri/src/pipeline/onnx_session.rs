@@ -1,7 +1,8 @@
-use crate::pipeline::image_meta::ImageMeta;
+use crate::pipeline::task_meta::ImageMeta;
 use crate::pipeline::image_stitcher::StitcherInfo;
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashSet;
+use crate::pipeline::task_meta::TaskType;
 use ndarray::Array4;
 use ort::{
     execution_providers::DirectMLExecutionProvider,
@@ -15,6 +16,7 @@ pub struct OnnxSessionInfo {
     // 可能会将不同任务的多个切片一起送入ONNX进行推理，所以要区分不同的batch上是哪一个任务的切片
     pub task_id: Vec<usize>,
     pub tile_index: Vec<usize>,
+    pub task_type: Vec<TaskType>,
     // 进行推理的切片数据 (NCHW 格式)
     pub batch_data: Array4<f32>,
     // 每个切片对应的图片元数据
@@ -166,10 +168,11 @@ impl OnnxSessionInner {
 
         // 发送到 Stitcher
         let stitcher_info = StitcherInfo {
-            task_id: onnx_info.task_id,
-            tile_index: onnx_info.tile_index,
+            task_ids: onnx_info.task_id,
+            tile_indexs: onnx_info.tile_index,
+            task_types: onnx_info.task_type,
             stitched_data,
-            image_meta: onnx_info.image_meta,
+            image_metas: onnx_info.image_meta,
         };
 
         self.stitcher_tx

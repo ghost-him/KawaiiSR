@@ -11,7 +11,7 @@ const emit = defineEmits(['taskCreated']);
 const message = useMessage();
 const { addTask, selectTask } = useTasks();
 
-interface TaskMetadata {
+interface TaskMetaStruct {
   total_tiles: number;
 }
 
@@ -32,7 +32,7 @@ async function startNewTask() {
         scaleFactor: scale
       });
       
-      const metadata = await invoke<TaskMetadata>("get_task_metadata", { taskId: id });
+      const metadata = await invoke<TaskMetaStruct>("get_task_metadata", { taskId: id });
       
       const newTask: Task = {
         id,

@@ -5,7 +5,7 @@ pub mod pipeline;
 pub mod sr_manager;
 
 use crate::app_state::AppState;
-use crate::sr_manager::{ModelName, SRInfo, TaskMetadata};
+use crate::sr_manager::{ModelName, SRInfo, TaskMetaStruct};
 use std::sync::Arc;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -18,7 +18,7 @@ fn greet(name: &str) -> String {
 async fn get_task_metadata(
     state: tauri::State<'_, Arc<AppState>>,
     task_id: usize,
-) -> Result<TaskMetadata, String> {
+) -> Result<TaskMetaStruct, String> {
     let manager = state.sr_pipline.clone();
     manager
         .get_task_metadata(task_id)
@@ -81,20 +81,27 @@ async fn get_result_image(
         // Convert to PNG bytes
         let data = &info.image_data;
         let shape = data.shape();
+        let channels = shape[1];
         let height = shape[2];
         let width = shape[3];
 
-        let mut pixels = Vec::with_capacity(height * width * 3);
+        let mut pixels = Vec::with_capacity(height * width * channels);
         for y in 0..height {
             for x in 0..width {
-                for c in 0..3 {
+                for c in 0..channels {
                     let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
                     pixels.push(val);
                 }
             }
         }
 
-        if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
+        let img_dynamic = if channels == 4 {
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgba8)
+        } else {
+            image::RgbImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgb8)
+        };
+
+        if let Some(img) = img_dynamic {
             let mut cursor = std::io::Cursor::new(Vec::new());
             img.write_to(&mut cursor, image::ImageFormat::Png)
                 .map_err(|e| e.to_string())?;
@@ -118,20 +125,27 @@ async fn save_result_image(
     if let Some(info) = manager.get_result(task_id).await {
         let data = &info.image_data;
         let shape = data.shape();
+        let channels = shape[1];
         let height = shape[2];
         let width = shape[3];
 
-        let mut pixels = Vec::with_capacity(height * width * 3);
+        let mut pixels = Vec::with_capacity(height * width * channels);
         for y in 0..height {
             for x in 0..width {
-                for c in 0..3 {
+                for c in 0..channels {
                     let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
                     pixels.push(val);
                 }
             }
         }
 
-        if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
+        let img_dynamic = if channels == 4 {
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgba8)
+        } else {
+            image::RgbImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgb8)
+        };
+
+        if let Some(img) = img_dynamic {
             img.save(output_path).map_err(|e| e.to_string())?;
             Ok(())
         } else {

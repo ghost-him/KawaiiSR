@@ -1,6 +1,8 @@
 use crate::sr_manager::ImageInfo;
+use crate::pipeline::task_meta::{TaskType, ImageType};
 use crossbeam_channel::Receiver;
 use dashmap::{DashMap, DashSet};
+use ndarray::{Axis, stack};
 use std::sync::Arc;
 use tauri::async_runtime::Mutex;
 use tauri::AppHandle;
@@ -9,6 +11,11 @@ use tauri::Emitter;
 pub struct ResultCollector {
     _handle: std::thread::JoinHandle<()>,
     app_handle_store: Arc<Mutex<Option<AppHandle>>>,
+}
+
+struct PartialTask {
+    rgb: Option<ImageInfo>,
+    alpha: Option<ImageInfo>,
 }
 
 impl ResultCollector {
@@ -24,6 +31,7 @@ impl ResultCollector {
         let mut inner = ResultCollectorInner {
             result_rx,
             results,
+            partial_results: std::collections::HashMap::new(),
             cancelled_tasks,
             app_handle: app_handle_store_inner,
         };
@@ -47,6 +55,7 @@ impl ResultCollector {
 struct ResultCollectorInner {
     result_rx: Receiver<ImageInfo>,
     results: Arc<DashMap<usize, ImageInfo>>,
+    partial_results: std::collections::HashMap<usize, PartialTask>,
     cancelled_tasks: Arc<DashSet<usize>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
@@ -64,55 +73,91 @@ impl ResultCollectorInner {
                     "[ResultCollector] Dropping result for cancelled task {}",
                     task_id
                 );
+                self.partial_results.remove(&task_id);
                 continue;
             }
 
             tracing::info!(
-                "[ResultCollector] Received result for task {} with shape: {:?}",
+                "[ResultCollector] Received result for task {} ({:?}) with shape: {:?}",
                 task_id,
+                image_info.task_type,
                 image_info.image_data.shape()
             );
 
-            // // 0. 调试: 保存到本地硬盘
-            // {
-            //     let data = &image_info.image_data;
-            //     let shape = data.shape();
-            //     let height = shape[2];
-            //     let width = shape[3];
+            // 处理合并逻辑
+            let final_result = match &image_info.task_type {
+                TaskType::Image(ImageType::RGB) => {
+                    // 普通 RGB 图片，直接完成
+                    Some(image_info)
+                }
+                TaskType::Image(ImageType::RGBA(is_alpha)) => {
+                    let entry = self.partial_results.entry(task_id).or_insert(PartialTask {
+                        rgb: None,
+                        alpha: None,
+                    });
 
-            //     let mut pixels = Vec::with_capacity(height * width * 3);
-            //     for y in 0..height {
-            //         for x in 0..width {
-            //             for c in 0..3 {
-            //                 let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
-            //                 pixels.push(val);
-            //             }
-            //         }
-            //     }
+                    if *is_alpha {
+                        entry.alpha = Some(image_info);
+                    } else {
+                        entry.rgb = Some(image_info);
+                    }
 
-            //     if let Some(img) = image::RgbImage::from_raw(width as u32, height as u32, pixels) {
-            //         let filename = format!("output_{}.png", task_id);
-            //         if let Err(e) = img.save(&filename) {
-            //             tracing::error!("[ResultCollector] Failed to save debug image {}: {}", filename, e);
-            //         } else {
-            //             tracing::info!("[ResultCollector] Debug image saved to {}", filename);
-            //         }
-            //     }
-            // }
+                    // 检查是否都到了
+                    if entry.rgb.is_some() && entry.alpha.is_some() {
+                        let partial = self.partial_results.remove(&task_id).unwrap();
+                        let rgb_info = partial.rgb.unwrap();
+                        let alpha_info = partial.alpha.unwrap();
 
-            // 1. 保存到内部存储
-            self.results.insert(task_id, image_info);
+                        // 合并 RGB 和 Alpha
+                        let rgb_data = rgb_info.image_data.index_axis(Axis(0), 0);
+                        let alpha_data = alpha_info.image_data.index_axis(Axis(0), 0);
 
-            // 2. 交互外部模块: 通知前端任务完成
-            let app_handle_clone = self.app_handle.clone();
-            tauri::async_runtime::block_on(async move {
-                let handle_lock = app_handle_clone.lock().await;
-                if let Some(handle) = &*handle_lock {
-                    if let Err(e) = handle.emit("sr-task-completed", task_id) {
-                        tracing::error!("[ResultCollector] Failed to emit event: {}", e);
+                        let mut combined_channels = Vec::new();
+                        // RGB
+                        for c in 0..3 {
+                            combined_channels.push(rgb_data.index_axis(Axis(0), c).to_owned());
+                        }
+                        // Alpha (取第一个通道)
+                        combined_channels.push(alpha_data.index_axis(Axis(0), 0).to_owned());
+
+                        let views: Vec<_> = combined_channels.iter().map(|ch| ch.view()).collect();
+                        let merged_data = stack(Axis(0), &views)
+                            .expect("Failed to stack channels in ResultCollector")
+                            .insert_axis(Axis(0));
+
+                        Some(ImageInfo {
+                            task_id,
+                            task_type: TaskType::Image(ImageType::RGBA(false)), // 最终结果
+                            image_data: merged_data,
+                            image_meta: rgb_info.image_meta.clone(),
+                        })
+                    } else {
+                        None
                     }
                 }
-            });
+                TaskType::Video(frame_idx) => {
+                    // 视频帧处理逻辑可以在这里扩展
+                    // 目前直接存入
+                    tracing::info!("[ResultCollector] Received frame {} for task {}", frame_idx, task_id);
+                    Some(image_info)
+                }
+            };
+
+            if let Some(final_info) = final_result {
+                // 1. 保存到内部存储
+                self.results.insert(task_id, final_info);
+
+                // 2. 交互外部模块: 通知前端任务完成
+                let app_handle_clone = self.app_handle.clone();
+                tauri::async_runtime::block_on(async move {
+                    let handle_lock = app_handle_clone.lock().await;
+                    if let Some(handle) = &*handle_lock {
+                        if let Err(e) = handle.emit("sr-task-completed", task_id) {
+                            tracing::error!("[ResultCollector] Failed to emit event: {}", e);
+                        }
+                    }
+                });
+            }
         }
 
         tracing::info!("[ResultCollector] Stopped");

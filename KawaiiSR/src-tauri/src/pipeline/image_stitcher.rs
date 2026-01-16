@@ -1,5 +1,6 @@
 use crate::pipeline::tiling_utils::{TilingInfo, BORDER, OVERLAP, TILE_SIZE};
-use crate::{pipeline::image_meta::ImageMeta, sr_manager::ImageInfo};
+use crate::{pipeline::task_meta::ImageMeta, sr_manager::ImageInfo};
+use crate::pipeline::task_meta::TaskType;
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashSet;
 use ndarray::{s, Array3, Array4, Axis};
@@ -10,10 +11,11 @@ use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Emitter};
 
 pub struct StitcherInfo {
-    pub task_id: Vec<usize>,
-    pub tile_index: Vec<usize>,
+    pub task_ids: Vec<usize>,
+    pub tile_indexs: Vec<usize>,
+    pub task_types: Vec<TaskType>,
     pub stitched_data: Array4<f32>,
-    pub image_meta: Vec<Arc<ImageMeta>>,
+    pub image_metas: Vec<Arc<ImageMeta>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -71,7 +73,7 @@ struct ImageStitcherInner {
     onnx_rx: Receiver<StitcherInfo>,
     manager_tx: Sender<ImageInfo>,
     cancelled_tasks: Arc<DashSet<usize>>,
-    tasks: HashMap<usize, TaskProgress>,
+    tasks: HashMap<(usize, TaskType), TaskProgress>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
@@ -84,14 +86,10 @@ impl ImageStitcherInner {
             // 第一步：清理当前批次中所有已取消任务的中间状态
             // 这样可以避免被取消的任务永久堆积在 self.tasks 中
             for i in 0..batch_size {
-                let task_id = stitcher_info.task_id[i];
+                let task_id = stitcher_info.task_ids[i];
                 if self.cancelled_tasks.contains(&task_id) {
-                    if self.tasks.remove(&task_id).is_some() {
-                        tracing::info!(
-                            "[ImageStitcher] Task {} cancelled, cleared context",
-                            task_id
-                        );
-                    }
+                    // 清理该任务的所有处理流
+                    self.tasks.retain(|(tid, _), _| *tid != task_id);
                 }
             }
 
@@ -99,7 +97,7 @@ impl ImageStitcherInner {
             let mut valid_indices: Vec<usize> = Vec::new();
 
             for i in 0..batch_size {
-                if !self.cancelled_tasks.contains(&stitcher_info.task_id[i]) {
+                if !self.cancelled_tasks.contains(&stitcher_info.task_ids[i]) {
                     valid_indices.push(i);
                 }
             }
@@ -111,13 +109,15 @@ impl ImageStitcherInner {
 
             // 第三步：处理有效任务
             for &i in &valid_indices {
-                let task_id = stitcher_info.task_id[i];
-                let tile_index = stitcher_info.tile_index[i];
-                let image_meta = &stitcher_info.image_meta[i];
+                let task_id = stitcher_info.task_ids[i];
+                let tile_index = stitcher_info.tile_indexs[i];
+                let task_type = &stitcher_info.task_types[i];
+                let image_meta = &stitcher_info.image_metas[i];
                 let scale = image_meta.scale_factor as usize;
 
                 // 获取或创建任务进度
-                let progress = self.tasks.entry(task_id).or_insert_with(|| {
+                let task_key = (task_id, task_type.clone());
+                let progress = self.tasks.entry(task_key).or_insert_with(|| {
                     let info =
                         TilingInfo::new(image_meta.original_height, image_meta.original_width);
                     let shape = (3, info.padded_h * scale, info.padded_w * scale);
@@ -178,7 +178,8 @@ impl ImageStitcherInner {
 
                 // 检查是否完成
                 if progress.received_count == progress.info.total_tiles() {
-                    let final_progress = self.tasks.remove(&task_id).unwrap();
+                    let task_key = (task_id, task_type.clone());
+                    let final_progress = self.tasks.remove(&task_key).unwrap();
 
                     // 裁剪掉填充和边缘
                     let h_start = BORDER * scale;
@@ -194,6 +195,7 @@ impl ImageStitcherInner {
                     // 封装并发送给 manager
                     let image_info = ImageInfo {
                         task_id,
+                        task_type: task_type.clone(),
                         image_data: final_image.insert_axis(Axis(0)),
                         image_meta: image_meta.clone(),
                     };

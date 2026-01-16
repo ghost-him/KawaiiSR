@@ -1,4 +1,4 @@
-use crate::pipeline::image_meta::ImageMeta;
+use crate::pipeline::task_meta::{ImageMeta, TaskType};
 use crate::pipeline::onnx_session::OnnxSessionInfo;
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashSet;
@@ -13,6 +13,7 @@ use std::time::Duration;
 pub struct BatcherInfo {
     pub task_id: usize,
     pub tile_index: usize,
+    pub task_type: TaskType,
     pub tile_data: Array3<f32>,
     pub image_meta: Arc<ImageMeta>,
 }
@@ -20,6 +21,7 @@ pub struct BatcherInfo {
 struct QueuedTile {
     task_id: usize,
     tile_index: usize,
+    task_type: TaskType,
     tile_data: Array3<f32>,
     image_meta: Arc<ImageMeta>,
 }
@@ -72,6 +74,7 @@ impl TensorBatcherInner {
                 self.queue.push_back(QueuedTile {
                     task_id: batcher_info.task_id,
                     tile_index: batcher_info.tile_index,
+                    task_type: batcher_info.task_type,
                     tile_data: batcher_info.tile_data,
                     image_meta: batcher_info.image_meta,
                 });
@@ -89,6 +92,7 @@ impl TensorBatcherInner {
                             self.queue.push_back(QueuedTile {
                                 task_id: batcher_info.task_id,
                                 tile_index: batcher_info.tile_index,
+                                task_type: batcher_info.task_type,
                                 tile_data: batcher_info.tile_data,
                                 image_meta: batcher_info.image_meta,
                             });
@@ -105,6 +109,7 @@ impl TensorBatcherInner {
                             self.queue.push_back(QueuedTile {
                                 task_id: batcher_info.task_id,
                                 tile_index: batcher_info.tile_index,
+                                task_type: batcher_info.task_type,
                                 tile_data: batcher_info.tile_data,
                                 image_meta: batcher_info.image_meta,
                             });
@@ -126,6 +131,7 @@ impl TensorBatcherInner {
             let current_batch_size = min(batch_size, self.queue.len());
             let mut batch_task_ids = Vec::with_capacity(current_batch_size);
             let mut batch_tile_indices = Vec::with_capacity(current_batch_size);
+            let mut batch_task_types = Vec::with_capacity(current_batch_size);
             let mut batch_tiles_data = Vec::with_capacity(current_batch_size);
             let mut batch_image_metas = Vec::with_capacity(current_batch_size);
 
@@ -133,6 +139,7 @@ impl TensorBatcherInner {
                 if let Some(tile) = self.queue.pop_front() {
                     batch_task_ids.push(tile.task_id);
                     batch_tile_indices.push(tile.tile_index);
+                    batch_task_types.push(tile.task_type);
                     batch_tiles_data.push(tile.tile_data);
                     batch_image_metas.push(tile.image_meta);
                 } else {
@@ -157,6 +164,7 @@ impl TensorBatcherInner {
             let onnx_info = OnnxSessionInfo {
                 task_id: batch_task_ids,
                 tile_index: batch_tile_indices,
+                task_type: batch_task_types,
                 batch_data,
                 image_meta: batch_image_metas,
             };

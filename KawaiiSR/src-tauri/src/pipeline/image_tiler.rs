@@ -1,20 +1,21 @@
-use crate::pipeline::image_meta::ImageMeta;
 use crate::pipeline::tensor_batcher::BatcherInfo;
 use crate::pipeline::tiling_utils::{TilingInfo, BORDER, TILE_SIZE};
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashSet;
-use image::GenericImageView;
 use ndarray::{s, Array3};
+use crate::pipeline::task_meta::{ImageMeta, TaskType};
 use std::sync::Arc;
 
-// 用于向ImageTiler提供切片信息
+/// 分块器接收的信息，包含处理后的图片数据和元数据
 pub struct TilerInfo {
-    // 该图片任务的唯一标识符
     pub task_id: usize,
-    // 图片输入路径
-    pub input_path: String,
-    // 模型缩放倍数
-    pub scale_factor: u32,
+    // 处理流ID（如果原图有多个通道需要分别处理，会生成多个处理流）
+    // 例如：原图有Alpha，则会有流0(RGB)和流1(Alpha)
+    pub task_type: TaskType,
+    // 处理后的图片数据（CHW格式）
+    pub image_data: Array3<f32>,
+    // 图片元数据
+    pub image_meta: Arc<ImageMeta>,
 }
 
 pub struct ImageTiler {
@@ -23,12 +24,12 @@ pub struct ImageTiler {
 
 impl ImageTiler {
     pub fn new(
-        manager_rx: Receiver<TilerInfo>,
+        preprocessor_rx: Receiver<TilerInfo>,
         batcher_tx: Sender<BatcherInfo>,
         cancelled_tasks: Arc<DashSet<usize>>,
     ) -> Self {
         let mut inner = ImageTilerInner {
-            manager_rx,
+            preprocessor_rx,
             batcher_tx,
             cancelled_tasks,
         };
@@ -42,7 +43,7 @@ impl ImageTiler {
 }
 
 struct ImageTilerInner {
-    manager_rx: Receiver<TilerInfo>,
+    preprocessor_rx: Receiver<TilerInfo>,
     batcher_tx: Sender<BatcherInfo>,
     cancelled_tasks: Arc<DashSet<usize>>,
 }
@@ -51,32 +52,23 @@ impl ImageTilerInner {
     fn execute(&mut self) {
         tracing::info!("[ImageTiler] Started");
 
-        // 从管道接收图片数据进行切片
-        while let Ok(tiler_info) = self.manager_rx.recv() {
+        // 从预处理器接收图片数据进行切片
+        while let Ok(preprocessor_output) = self.preprocessor_rx.recv() {
+            let task_id = preprocessor_output.task_id;
+            let image_data = preprocessor_output.image_data;
+            let image_meta = preprocessor_output.image_meta;
+
             // 检查确认任务是否已被取消
-            if self.cancelled_tasks.contains(&tiler_info.task_id) {
-                tracing::info!("[ImageTiler] Task {} is cancelled, skipping", tiler_info.task_id);
+            if self.cancelled_tasks.contains(&task_id) {
+                tracing::info!("[ImageTiler] Task {} is cancelled", task_id);
                 continue;
             }
 
             tracing::info!(
-                "[ImageTiler] Processing task {} with image: {}",
-                tiler_info.task_id,
-                tiler_info.input_path
+                "[ImageTiler] Processing task {} with shape: {:?}",
+                task_id,
+                image_data.shape()
             );
-
-            // 1. 在此处加载并预处理图片
-            let (image_data, image_meta) = match self.load_image(&tiler_info) {
-                Ok(data) => data,
-                Err(e) => {
-                    tracing::error!(
-                        "[ImageTiler] Failed to load image {}: {}",
-                        tiler_info.input_path,
-                        e
-                    );
-                    continue;
-                }
-            };
 
             let (c, h, w) = image_data.dim();
             let info = TilingInfo::new(h, w);
@@ -114,16 +106,17 @@ impl ImageTilerInner {
                     .to_owned();
 
                 let batcher_info = BatcherInfo {
-                    task_id: tiler_info.task_id,
+                    task_id,
                     tile_index: i,
-                    tile_data: tile_data,
+                    task_type: preprocessor_output.task_type.clone(),
+                    tile_data,
                     image_meta: image_meta.clone(),
                 };
 
                 if let Err(e) = self.batcher_tx.send(batcher_info) {
                     tracing::error!(
                         "[ImageTiler] Failed to send tile to batcher for task {}: {}",
-                        tiler_info.task_id,
+                        task_id,
                         e
                     );
                     break;
@@ -132,27 +125,6 @@ impl ImageTilerInner {
         }
 
         tracing::info!("[ImageTiler] Stopped");
-    }
-
-    fn load_image(&self, info: &TilerInfo) -> anyhow::Result<(Array3<f32>, Arc<ImageMeta>)> {
-        let img = image::open(&info.input_path)?;
-        let (width, height) = img.dimensions();
-        let rgb_img = img.to_rgb8();
-        let image_meta = Arc::new(ImageMeta {
-            original_width: width as usize,
-            original_height: height as usize,
-            scale_factor: info.scale_factor,
-        });
-
-        // 归一化 (CHW)
-        let mut array = Array3::<f32>::zeros((3, height as usize, width as usize));
-        for (x, y, pixel) in rgb_img.enumerate_pixels() {
-            for c in 0..3 {
-                array[[c, y as usize, x as usize]] = pixel[c] as f32 / 255.0;
-            }
-        }
-
-        Ok((array, image_meta))
     }
 }
 
@@ -172,3 +144,4 @@ fn reflect_index(mut i: isize, len: usize) -> usize {
         }
     }
 }
+
