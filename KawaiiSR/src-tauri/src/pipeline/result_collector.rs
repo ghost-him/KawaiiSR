@@ -1,6 +1,6 @@
 use crate::sr_manager::ImageInfo;
 use crossbeam_channel::Receiver;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use tauri::async_runtime::Mutex;
 use tauri::AppHandle;
@@ -15,6 +15,7 @@ impl ResultCollector {
     pub fn new(
         result_rx: Receiver<ImageInfo>,
         results: Arc<DashMap<usize, ImageInfo>>,
+        cancelled_tasks: Arc<DashSet<usize>>,
         app_handle: Option<AppHandle>,
     ) -> Self {
         let app_handle_store = Arc::new(Mutex::new(app_handle));
@@ -23,6 +24,7 @@ impl ResultCollector {
         let mut inner = ResultCollectorInner {
             result_rx,
             results,
+            cancelled_tasks,
             app_handle: app_handle_store_inner,
         };
 
@@ -45,6 +47,7 @@ impl ResultCollector {
 struct ResultCollectorInner {
     result_rx: Receiver<ImageInfo>,
     results: Arc<DashMap<usize, ImageInfo>>,
+    cancelled_tasks: Arc<DashSet<usize>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
@@ -54,6 +57,16 @@ impl ResultCollectorInner {
 
         while let Ok(image_info) = self.result_rx.recv() {
             let task_id = image_info.task_id;
+
+            // 检查确认任务是否已取消
+            if self.cancelled_tasks.contains(&task_id) {
+                tracing::info!(
+                    "[ResultCollector] Dropping result for cancelled task {}",
+                    task_id
+                );
+                continue;
+            }
+
             tracing::info!(
                 "[ResultCollector] Received result for task {} with shape: {:?}",
                 task_id,

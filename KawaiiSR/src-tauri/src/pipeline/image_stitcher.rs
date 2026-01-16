@@ -1,6 +1,7 @@
 use crate::pipeline::tiling_utils::{TilingInfo, BORDER, OVERLAP, TILE_SIZE};
 use crate::{pipeline::image_meta::ImageMeta, sr_manager::ImageInfo};
 use crossbeam_channel::{Receiver, Sender};
+use dashmap::DashSet;
 use ndarray::{s, Array3, Array4, Axis};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -28,13 +29,18 @@ pub struct ImageStitcher {
 }
 
 impl ImageStitcher {
-    pub fn new(onnx_rx: Receiver<StitcherInfo>, manager_tx: Sender<ImageInfo>) -> Self {
+    pub fn new(
+        onnx_rx: Receiver<StitcherInfo>,
+        manager_tx: Sender<ImageInfo>,
+        cancelled_tasks: Arc<DashSet<usize>>,
+    ) -> Self {
         let app_handle_store = Arc::new(Mutex::new(None));
         let app_handle_store_inner = app_handle_store.clone();
 
         let mut inner = ImageStitcherInner {
             onnx_rx,
             manager_tx,
+            cancelled_tasks,
             tasks: HashMap::new(),
             app_handle: app_handle_store_inner,
         };
@@ -64,6 +70,7 @@ struct TaskProgress {
 struct ImageStitcherInner {
     onnx_rx: Receiver<StitcherInfo>,
     manager_tx: Sender<ImageInfo>,
+    cancelled_tasks: Arc<DashSet<usize>>,
     tasks: HashMap<usize, TaskProgress>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
@@ -74,7 +81,36 @@ impl ImageStitcherInner {
         while let Ok(stitcher_info) = self.onnx_rx.recv() {
             let batch_size = stitcher_info.stitched_data.shape()[0];
 
+            // 第一步：清理当前批次中所有已取消任务的中间状态
+            // 这样可以避免被取消的任务永久堆积在 self.tasks 中
             for i in 0..batch_size {
+                let task_id = stitcher_info.task_id[i];
+                if self.cancelled_tasks.contains(&task_id) {
+                    if self.tasks.remove(&task_id).is_some() {
+                        tracing::info!(
+                            "[ImageStitcher] Task {} cancelled, cleared context",
+                            task_id
+                        );
+                    }
+                }
+            }
+
+            // 第二步：记录需要处理的任务索引（跳过已取消的任务）
+            let mut valid_indices: Vec<usize> = Vec::new();
+
+            for i in 0..batch_size {
+                if !self.cancelled_tasks.contains(&stitcher_info.task_id[i]) {
+                    valid_indices.push(i);
+                }
+            }
+
+            // 如果批次中所有任务都已取消，直接跳过
+            if valid_indices.is_empty() {
+                continue;
+            }
+
+            // 第三步：处理有效任务
+            for &i in &valid_indices {
                 let task_id = stitcher_info.task_id[i];
                 let tile_index = stitcher_info.tile_index[i];
                 let image_meta = &stitcher_info.image_meta[i];

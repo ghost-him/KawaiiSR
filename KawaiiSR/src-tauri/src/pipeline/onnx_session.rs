@@ -1,6 +1,7 @@
 use crate::pipeline::image_meta::ImageMeta;
 use crate::pipeline::image_stitcher::StitcherInfo;
 use crossbeam_channel::{Receiver, Sender};
+use dashmap::DashSet;
 use ndarray::Array4;
 use ort::{
     execution_providers::DirectMLExecutionProvider,
@@ -25,10 +26,15 @@ pub struct OnnxSession {
 }
 
 impl OnnxSession {
-    pub fn new(batcher_rx: Receiver<OnnxSessionInfo>, stitcher_tx: Sender<StitcherInfo>) -> Self {
+    pub fn new(
+        batcher_rx: Receiver<OnnxSessionInfo>,
+        stitcher_tx: Sender<StitcherInfo>,
+        cancelled_tasks: Arc<DashSet<usize>>,
+    ) -> Self {
         let mut inner = OnnxSessionInner {
             batcher_rx,
             stitcher_tx,
+            cancelled_tasks,
             session: None,
         };
 
@@ -43,6 +49,7 @@ impl OnnxSession {
 struct OnnxSessionInner {
     batcher_rx: Receiver<OnnxSessionInfo>,
     stitcher_tx: Sender<StitcherInfo>,
+    cancelled_tasks: Arc<DashSet<usize>>,
     session: Option<Session>,
 }
 
@@ -58,6 +65,14 @@ impl OnnxSessionInner {
 
         // 2. 接收数据并进行推理
         while let Ok(onnx_info) = self.batcher_rx.recv() {
+            // 检查该 batch 中的所有任务是否都已取消。
+            // 只要有一个任务没取消，我们就得跑这个 batch（因为切片是混在一起的）。
+            // 但如果全部取消了，可以直接跳过。
+            if onnx_info.task_id.iter().all(|id| self.cancelled_tasks.contains(id)) {
+                tracing::info!("[OnnxSession] Skipping batch as all tasks are cancelled");
+                continue;
+            }
+
             tracing::info!(
                 "[OnnxSession] Processing batch with {} tiles, shape: {:?}",
                 onnx_info.task_id.len(),

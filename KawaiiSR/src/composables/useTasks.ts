@@ -38,6 +38,16 @@ export function useTasks() {
         }
     }
 
+    async function cancelTask(id: number) {
+        try {
+            // 首先更新本地状态，让用户感觉到反馈
+            updateTask(id, { status: 'cancelled' });
+            await invoke("cancel_super_resolution", { taskId: id });
+        } catch (err) {
+            console.error(`Failed to cancel task ${id}:`, err);
+        }
+    }
+
     return {
         tasks,
         activeTaskId,
@@ -45,6 +55,7 @@ export function useTasks() {
         addTask,
         updateTask,
         selectTask,
-        fetchResultImage
+        fetchResultImage,
+        cancelTask
     };
 }

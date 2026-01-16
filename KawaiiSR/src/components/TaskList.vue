@@ -16,6 +16,7 @@ function formatStatus(status: string) {
         case 'completed': return '已完成';
         case 'processing': return '处理中';
         case 'failed': return '失败';
+        case 'cancelled': return '已取消';
         default: return '未知';
     }
 }
@@ -25,6 +26,7 @@ function statusType(status: string) {
         case 'completed': return 'success';
         case 'processing': return 'info';
         case 'failed': return 'error';
+        case 'cancelled': return 'warning';
         default: return 'default';
     }
 }

@@ -1,6 +1,7 @@
 use crate::pipeline::image_meta::ImageMeta;
 use crate::pipeline::onnx_session::OnnxSessionInfo;
 use crossbeam_channel::{Receiver, Sender};
+use dashmap::DashSet;
 use ndarray::Array3;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -28,10 +29,15 @@ pub struct TensorBatcher {
 }
 
 impl TensorBatcher {
-    pub fn new(tiler_rx: Receiver<BatcherInfo>, onnx_tx: Sender<OnnxSessionInfo>) -> Self {
+    pub fn new(
+        tiler_rx: Receiver<BatcherInfo>,
+        onnx_tx: Sender<OnnxSessionInfo>,
+        cancelled_tasks: Arc<DashSet<usize>>,
+    ) -> Self {
         let mut inner = TensorBatcherInner {
             tiler_rx,
             onnx_tx,
+            cancelled_tasks,
             queue: VecDeque::new(),
         };
 
@@ -46,6 +52,7 @@ impl TensorBatcher {
 struct TensorBatcherInner {
     tiler_rx: Receiver<BatcherInfo>,
     onnx_tx: Sender<OnnxSessionInfo>,
+    cancelled_tasks: Arc<DashSet<usize>>,
     queue: VecDeque<QueuedTile>,
 }
 
@@ -105,6 +112,14 @@ impl TensorBatcherInner {
                         Err(_) => break, // 等待超时或通道关闭
                     }
                 }
+            }
+
+            // 3. 准备处理前，过滤掉队列中已被取消任务的切片（处理前统一检查）
+            self.queue
+                .retain(|tile| !self.cancelled_tasks.contains(&tile.task_id));
+
+            if self.queue.is_empty() {
+                continue;
             }
 
             // 3. 从队列中取出指定数量的切片进行批处理

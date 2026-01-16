@@ -2,6 +2,7 @@ use crate::pipeline::image_meta::ImageMeta;
 use crate::pipeline::tensor_batcher::BatcherInfo;
 use crate::pipeline::tiling_utils::{TilingInfo, BORDER, TILE_SIZE};
 use crossbeam_channel::{Receiver, Sender};
+use dashmap::DashSet;
 use image::GenericImageView;
 use ndarray::{s, Array3};
 use std::sync::Arc;
@@ -21,10 +22,15 @@ pub struct ImageTiler {
 }
 
 impl ImageTiler {
-    pub fn new(manager_rx: Receiver<TilerInfo>, batcher_tx: Sender<BatcherInfo>) -> Self {
+    pub fn new(
+        manager_rx: Receiver<TilerInfo>,
+        batcher_tx: Sender<BatcherInfo>,
+        cancelled_tasks: Arc<DashSet<usize>>,
+    ) -> Self {
         let mut inner = ImageTilerInner {
             manager_rx,
             batcher_tx,
+            cancelled_tasks,
         };
 
         let handle = std::thread::spawn(move || {
@@ -38,6 +44,7 @@ impl ImageTiler {
 struct ImageTilerInner {
     manager_rx: Receiver<TilerInfo>,
     batcher_tx: Sender<BatcherInfo>,
+    cancelled_tasks: Arc<DashSet<usize>>,
 }
 
 impl ImageTilerInner {
@@ -46,6 +53,12 @@ impl ImageTilerInner {
 
         // 从管道接收图片数据进行切片
         while let Ok(tiler_info) = self.manager_rx.recv() {
+            // 检查确认任务是否已被取消
+            if self.cancelled_tasks.contains(&tiler_info.task_id) {
+                tracing::info!("[ImageTiler] Task {} is cancelled, skipping", tiler_info.task_id);
+                continue;
+            }
+
             tracing::info!(
                 "[ImageTiler] Processing task {} with image: {}",
                 tiler_info.task_id,

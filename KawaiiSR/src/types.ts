@@ -4,7 +4,7 @@ export interface Task {
     outputPath?: string;
     filename: string;
     scaleFactor: number;
-    status: 'pending' | 'processing' | 'completed' | 'failed';
+    status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
     progress: number;
     completedTiles?: number;
     totalTiles?: number;

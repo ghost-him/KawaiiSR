@@ -57,6 +57,20 @@ async fn run_super_resolution(
 }
 
 #[tauri::command]
+async fn cancel_super_resolution(
+    state: tauri::State<'_, Arc<AppState>>,
+    task_id: usize,
+) -> Result<(), String> {
+    tracing::info!(
+        "Command 'cancel_super_resolution' invoked for task {}",
+        task_id
+    );
+    let manager = state.sr_pipline.clone();
+    manager.cancel_task(task_id).await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_result_image(
     state: tauri::State<'_, Arc<AppState>>,
     task_id: usize,
@@ -144,6 +158,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             run_super_resolution,
+            cancel_super_resolution,
             get_result_image,
             save_result_image,
             get_task_metadata

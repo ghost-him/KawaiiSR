@@ -4,15 +4,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { 
   NTag, NProgress, NCard, NImage,
-  NDescriptions, NDescriptionsItem, NText, useMessage
+  NDescriptions, NDescriptionsItem, NText, useMessage, NButton
 } from "naive-ui";
 import type { ImageRenderToolbarProps } from 'naive-ui'
 import type { Task } from "../types";
+import { useTasks } from "../composables/useTasks";
 
 const props = defineProps<{
   task: Task
 }>();
 
+const { cancelTask } = useTasks();
 const message = useMessage();
 
 function formatStatus(status: string) {
@@ -20,6 +22,7 @@ function formatStatus(status: string) {
         case 'completed': return '已完成';
         case 'processing': return '处理中';
         case 'failed': return '失败';
+        case 'cancelled': return '已取消';
         default: return '未知';
     }
 }
@@ -29,6 +32,7 @@ function statusType(status: string) {
         case 'completed': return 'success';
         case 'processing': return 'info';
         case 'failed': return 'error';
+        case 'cancelled': return 'warning';
         default: return 'default';
     }
 }
@@ -37,6 +41,7 @@ const progressText = computed(() => {
   const t = props.task;
   if (t.status === 'completed') return '转换已完成，结果已就绪';
   if (t.status === 'failed') return '处理失败';
+  if (t.status === 'cancelled') return '任务已取消';
   
   if (t.status === 'processing') {
     if (t.completedTiles !== undefined && t.totalTiles !== undefined) {
@@ -109,6 +114,16 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
         <n-tag :type="statusType(task.status)" round :bordered="false">
           {{ formatStatus(task.status) }}
         </n-tag>
+        <n-button 
+          v-if="task.status === 'pending' || task.status === 'processing'" 
+          size="small" 
+          type="error" 
+          secondary 
+          round
+          @click="cancelTask(task.id)"
+        >
+          取消任务
+        </n-button>
       </h1>
     </div>
     

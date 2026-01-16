@@ -9,9 +9,8 @@ use crate::pipeline::{
 };
 use anyhow::Result;
 use crossbeam_channel::{bounded, unbounded, Sender};
-use dashmap::DashMap;
-use image::GenericImageView;
-use ndarray::{Array3, Array4};
+use dashmap::{DashMap, DashSet};
+use ndarray::Array4;
 use std::sync::Arc;
 use tauri::{async_runtime::Mutex, AppHandle};
 
@@ -91,6 +90,12 @@ impl SRManager {
         inner.result_collector.set_app_handle(handle.clone()).await;
         inner.image_stitcher.set_app_handle(handle).await;
     }
+
+    pub async fn cancel_task(&self, task_id: usize) {
+        let inner = self.inner.lock().await;
+        inner.cancelled_tasks.insert(task_id);
+        tracing::info!("[SRManager] Task {} marked as cancelled", task_id);
+    }
 }
 
 pub struct SRManagerInner {
@@ -112,6 +117,8 @@ pub struct SRManagerInner {
     pub task_metadata: DashMap<usize, TaskMetadata>,
     // 结果收集器 (后台线程监控)
     pub result_collector: ResultCollector,
+    // 被取消的任务集
+    pub cancelled_tasks: Arc<DashSet<usize>>,
 }
 
 impl Default for SRManagerInner {
@@ -136,14 +143,15 @@ impl Default for SRManagerInner {
 
         // 创建各组件
         let results = Arc::new(DashMap::new());
+        let cancelled_tasks = Arc::new(DashSet::new());
 
-        let image_tiler = ImageTiler::new(manager_rx_tiler, tiler_tx_batcher);
-        let tensor_batcher = TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx);
-        let onnx_session = OnnxSession::new(batcher_rx_onnx, onnx_tx_stitcher);
-        let image_stitcher = ImageStitcher::new(onnx_rx_stitcher, stitcher_tx_manager);
+        let image_tiler = ImageTiler::new(manager_rx_tiler, tiler_tx_batcher, cancelled_tasks.clone());
+        let tensor_batcher = TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx, cancelled_tasks.clone());
+        let onnx_session = OnnxSession::new(batcher_rx_onnx, onnx_tx_stitcher, cancelled_tasks.clone());
+        let image_stitcher = ImageStitcher::new(onnx_rx_stitcher, stitcher_tx_manager, cancelled_tasks.clone());
 
         // 监控最终结果
-        let result_collector = ResultCollector::new(stitcher_rx_manager, results.clone(), None);
+        let result_collector = ResultCollector::new(stitcher_rx_manager, results.clone(), cancelled_tasks.clone(), None);
 
         Self {
             image_tiler,
@@ -155,6 +163,7 @@ impl Default for SRManagerInner {
             results,
             task_metadata: DashMap::new(),
             result_collector,
+            cancelled_tasks,
         }
     }
 }
