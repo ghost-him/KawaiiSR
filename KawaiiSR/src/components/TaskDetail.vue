@@ -9,6 +9,7 @@ import {
 import type { ImageRenderToolbarProps } from 'naive-ui'
 import type { Task } from "../types";
 import { useTasks } from "../composables/useTasks";
+import ImageCompare from "./ImageCompare.vue";
 
 const props = defineProps<{
   task: Task
@@ -154,19 +155,30 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
       </div>
     </div>
     
-    <div class="result-section" v-if="task.resultImageSrc">
-      <n-card :bordered="false" title="处理结果预览" size="small" style="border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
+    <div class="result-section" v-if="task.originalImageSrc || task.resultImageSrc">
+      <n-card :bordered="false" :title="task.resultImageSrc ? '对比预览 (中间滑块可拖动)' : '原图预览'" size="small" style="border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);">
         <div class="image-wrapper" style="background: white; padding: 12px; text-align: center; border-radius: 4px; overflow: hidden;">
+          <ImageCompare 
+            v-if="task.resultImageSrc && task.originalImageSrc"
+            :before="task.originalImageSrc" 
+            :after="task.resultImageSrc"
+          />
           <n-image 
-            :src="task.resultImageSrc" 
+            v-else-if="task.originalImageSrc"
+            :src="task.originalImageSrc" 
             class="pixelated-img"
             style="max-width: 100%; max-height: 500px;" 
             object-fit="contain" 
             :render-toolbar="renderToolbar"
           />
         </div>
-        <div style="margin-top: 12px; text-align: center; color: #999; font-size: 12px;">
-          点击图片可查看大图并下载
+        <div v-if="task.resultImageSrc" style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center;">
+          <div style="color: #999; font-size: 12px;">
+            左侧: 原图 | 右侧: 超分结果
+          </div>
+          <n-button size="tiny" type="primary" secondary @click="saveResult()">
+            下载完整结果
+          </n-button>
         </div>
       </n-card>
     </div>

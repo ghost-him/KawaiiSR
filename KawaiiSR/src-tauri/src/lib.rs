@@ -71,6 +71,11 @@ async fn cancel_super_resolution(
 }
 
 #[tauri::command]
+async fn get_image_data(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_result_image(
     state: tauri::State<'_, Arc<AppState>>,
     task_id: usize,
@@ -173,6 +178,7 @@ pub fn run() {
             greet,
             run_super_resolution,
             cancel_super_resolution,
+            get_image_data,
             get_result_image,
             save_result_image,
             get_task_metadata

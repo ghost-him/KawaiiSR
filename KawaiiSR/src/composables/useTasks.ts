@@ -13,6 +13,9 @@ export function useTasks() {
     function addTask(task: Task) {
         tasks.value.unshift(task);
         activeTaskId.value = task.id;
+        if (task.inputPath) {
+            fetchOriginalImage(task.id, task.inputPath);
+        }
     }
 
     function updateTask(id: number, updates: Partial<Task>) {
@@ -24,6 +27,17 @@ export function useTasks() {
 
     function selectTask(id: number | null) {
         activeTaskId.value = id;
+    }
+
+    async function fetchOriginalImage(id: number, path: string) {
+        try {
+            const bytes = await invoke<Uint8Array>("get_image_data", { path });
+            const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+            const url = URL.createObjectURL(blob);
+            updateTask(id, { originalImageSrc: url });
+        } catch (err) {
+            console.error(`Failed to fetch original image for task ${id}:`, err);
+        }
     }
 
     async function fetchResultImage(id: number) {

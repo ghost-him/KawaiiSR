@@ -9,5 +9,6 @@ export interface Task {
     completedTiles?: number;
     totalTiles?: number;
     resultImageSrc?: string;
+    originalImageSrc?: string;
     startTime: number;
 }
