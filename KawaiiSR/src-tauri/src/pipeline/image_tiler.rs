@@ -2,6 +2,7 @@ use crate::pipeline::image_meta::ImageMeta;
 use crate::pipeline::tensor_batcher::BatcherInfo;
 use crate::pipeline::tiling_utils::{TilingInfo, BORDER, TILE_SIZE};
 use crossbeam_channel::{Receiver, Sender};
+use image::GenericImageView;
 use ndarray::{s, Array3};
 use std::sync::Arc;
 
@@ -9,10 +10,10 @@ use std::sync::Arc;
 pub struct TilerInfo {
     // 该图片任务的唯一标识符
     pub task_id: usize,
-    // 图片的内容 (CHW 格式，单个图片)
-    pub image_data: Array3<f32>,
-    // 图片的元数据
-    pub image_meta: Arc<ImageMeta>,
+    // 图片输入路径
+    pub input_path: String,
+    // 模型缩放倍数
+    pub scale_factor: u32,
 }
 
 pub struct ImageTiler {
@@ -46,12 +47,25 @@ impl ImageTilerInner {
         // 从管道接收图片数据进行切片
         while let Ok(tiler_info) = self.manager_rx.recv() {
             tracing::info!(
-                "[ImageTiler] Processing task {} with image shape: {:?}",
+                "[ImageTiler] Processing task {} with image: {}",
                 tiler_info.task_id,
-                tiler_info.image_data.shape()
+                tiler_info.input_path
             );
 
-            let (c, h, w) = tiler_info.image_data.dim();
+            // 1. 在此处加载并预处理图片
+            let (image_data, image_meta) = match self.load_image(&tiler_info) {
+                Ok(data) => data,
+                Err(e) => {
+                    tracing::error!(
+                        "[ImageTiler] Failed to load image {}: {}",
+                        tiler_info.input_path,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let (c, h, w) = image_data.dim();
             let info = TilingInfo::new(h, w);
 
             // 1. 创建大的填充后的数组，默认值为 0 (满足 0 填充要求)
@@ -66,16 +80,13 @@ impl ImageTilerInner {
                     let src_x = reflect_index((x as isize) - (BORDER as isize), w);
 
                     for channel in 0..c {
-                        padded_data[[channel, y, x]] =
-                            tiler_info.image_data[[channel, src_y, src_x]];
+                        padded_data[[channel, y, x]] = image_data[[channel, src_y, src_x]];
                     }
                 }
             }
 
             // 3. 将其按照 128*128 的方式完成切分，传送给 batcher
             let total_tiles = info.total_tiles();
-            let mut tile_indices = Vec::with_capacity(total_tiles);
-            let mut all_tiles_data = Vec::with_capacity(total_tiles);
 
             for i in 0..total_tiles {
                 let (start_y, start_x) = info.get_tile_start(i);
@@ -89,23 +100,46 @@ impl ImageTilerInner {
                     ])
                     .to_owned();
 
-                tile_indices.push(i);
-                all_tiles_data.push(tile_data);
-            }
+                let batcher_info = BatcherInfo {
+                    task_id: tiler_info.task_id,
+                    tile_index: i,
+                    tile_data: tile_data,
+                    image_meta: image_meta.clone(),
+                };
 
-            let batcher_info = BatcherInfo {
-                task_id: tiler_info.task_id,
-                tile_index: tile_indices,
-                tile_data: all_tiles_data,
-                image_meta: tiler_info.image_meta.clone(),
-            };
-
-            if let Err(e) = self.batcher_tx.send(batcher_info) {
-                tracing::error!("[ImageTiler] Failed to send to batcher: {}", e);
+                if let Err(e) = self.batcher_tx.send(batcher_info) {
+                    tracing::error!(
+                        "[ImageTiler] Failed to send tile to batcher for task {}: {}",
+                        tiler_info.task_id,
+                        e
+                    );
+                    break;
+                }
             }
         }
 
         tracing::info!("[ImageTiler] Stopped");
+    }
+
+    fn load_image(&self, info: &TilerInfo) -> anyhow::Result<(Array3<f32>, Arc<ImageMeta>)> {
+        let img = image::open(&info.input_path)?;
+        let (width, height) = img.dimensions();
+        let rgb_img = img.to_rgb8();
+        let image_meta = Arc::new(ImageMeta {
+            original_width: width as usize,
+            original_height: height as usize,
+            scale_factor: info.scale_factor,
+        });
+
+        // 归一化 (CHW)
+        let mut array = Array3::<f32>::zeros((3, height as usize, width as usize));
+        for (x, y, pixel) in rgb_img.enumerate_pixels() {
+            for c in 0..3 {
+                array[[c, y as usize, x as usize]] = pixel[c] as f32 / 255.0;
+            }
+        }
+
+        Ok((array, image_meta))
     }
 }
 

@@ -8,7 +8,7 @@ use crate::pipeline::{
     tensor_batcher::TensorBatcher,
 };
 use anyhow::Result;
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{bounded, unbounded, Sender};
 use dashmap::DashMap;
 use image::GenericImageView;
 use ndarray::{Array3, Array4};
@@ -118,17 +118,18 @@ impl Default for SRManagerInner {
     fn default() -> Self {
         // 创建各 pipeline 之间的通道
 
-        // Manager -> Tiler 的通道
-        let (manager_tx_tiler, manager_rx_tiler) = unbounded();
+        // Manager -> Tiler 的通道 (限制最多同时读取一个图片等待处理)
+        // 改为较大的有界通道，因为现在发送的只是路径，不占内存
+        let (manager_tx_tiler, manager_rx_tiler) = bounded(100);
 
-        // Tiler -> Batcher 的通道
-        let (tiler_tx_batcher, tiler_rx_batcher) = unbounded();
+        // Tiler -> Batcher 的通道 (限制 16 个切片在队列中)
+        let (tiler_tx_batcher, tiler_rx_batcher) = bounded(16);
 
-        // Batcher -> OnnxSession 的通道
-        let (batcher_tx_onnx, batcher_rx_onnx) = unbounded();
+        // Batcher -> OnnxSession 的通道 (限制 2 个 Batch)
+        let (batcher_tx_onnx, batcher_rx_onnx) = bounded(2);
 
-        // OnnxSession -> Stitcher 的通道
-        let (onnx_tx_stitcher, onnx_rx_stitcher) = unbounded();
+        // OnnxSession -> Stitcher 的通道 (限制 16 个切片等待合并)
+        let (onnx_tx_stitcher, onnx_rx_stitcher) = bounded(16);
 
         // Stitcher -> Manager 的通道
         let (stitcher_tx_manager, stitcher_rx_manager) = unbounded();
@@ -161,23 +162,8 @@ impl Default for SRManagerInner {
 impl SRManagerInner {
     // 开始超分辨率一个图片
     pub fn run_inference(&mut self, sr_info: SRInfo) -> Result<usize> {
-        // 1. 读取当前的图片
-        let img = image::open(&sr_info.input_path)?;
-        let (width, height) = img.dimensions();
-        let rgb_img = img.to_rgb8();
-        let image_meta = Arc::new(ImageMeta {
-            original_width: width as usize,
-            original_height: height as usize,
-            scale_factor: sr_info.scale_factor,
-        });
-
-        // 2. 将其变成ndarray [3, H, W] f32 归一化 (CHW)
-        let mut array = Array3::<f32>::zeros((3, height as usize, width as usize));
-        for (x, y, pixel) in rgb_img.enumerate_pixels() {
-            for c in 0..3 {
-                array[[c, y as usize, x as usize]] = pixel[c] as f32 / 255.0;
-            }
-        }
+        // 1. 仅获取图片尺寸，不加载完整图片数据
+        let (width, height) = image::image_dimensions(&sr_info.input_path)?;
 
         let current_task_id = self.id_generator.generate_id();
 
@@ -190,11 +176,11 @@ impl SRManagerInner {
             },
         );
 
-        // 3. 封装信息并发送给 image_tiler
+        // 2. 封装信息并发送给 image_tiler，仅传递路径
         let tiler_info = TilerInfo {
             task_id: current_task_id,
-            image_data: array,
-            image_meta: image_meta,
+            input_path: sr_info.input_path.clone(),
+            scale_factor: sr_info.scale_factor,
         };
         self.tiler_tx
             .send(tiler_info)

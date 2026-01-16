@@ -5,13 +5,14 @@ use ndarray::Array3;
 use std::cmp::min;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 // 用于向TensorBatcher提供切片信息
 // 单个切片表示为 Array3 (CHW)
 pub struct BatcherInfo {
     pub task_id: usize,
-    pub tile_index: Vec<usize>,
-    pub tile_data: Vec<Array3<f32>>,
+    pub tile_index: usize,
+    pub tile_data: Array3<f32>,
     pub image_meta: Arc<ImageMeta>,
 }
 
@@ -56,65 +57,58 @@ impl TensorBatcherInner {
 
     fn execute(&mut self) {
         tracing::info!("[TensorBatcher] Started");
+        let batch_size = self.get_batch_size();
 
         loop {
             // 1. 尽可能从接收端读取数据并放入队列
-            // 使用 try_recv 避免阻塞，这样可以在没有新输入时也能处理队列中的数据
             while let Ok(batcher_info) = self.tiler_rx.try_recv() {
-                let num_tiles = batcher_info.tile_data.len();
-                tracing::info!(
-                    "[TensorBatcher] Queuing task {} with {} tiles",
-                    batcher_info.task_id,
-                    num_tiles
-                );
-
-                for (idx, data) in batcher_info
-                    .tile_index
-                    .into_iter()
-                    .zip(batcher_info.tile_data.into_iter())
-                {
-                    self.queue.push_back(QueuedTile {
-                        task_id: batcher_info.task_id,
-                        tile_index: idx,
-                        tile_data: data,
-                        image_meta: batcher_info.image_meta.clone(),
-                    });
+                self.queue.push_back(QueuedTile {
+                    task_id: batcher_info.task_id,
+                    tile_index: batcher_info.tile_index,
+                    tile_data: batcher_info.tile_data,
+                    image_meta: batcher_info.image_meta,
+                });
+                if self.queue.len() >= batch_size {
+                    break;
                 }
             }
 
-            // 2. 如果队列为空，则阻塞等待新数据
-            if self.queue.is_empty() {
-                match self.tiler_rx.recv() {
-                    Ok(batcher_info) => {
-                        let num_tiles = batcher_info.tile_data.len();
-                        tracing::info!(
-                            "[TensorBatcher] Received and queuing task {} with {} tiles",
-                            batcher_info.task_id,
-                            num_tiles
-                        );
-
-                        for (idx, data) in batcher_info
-                            .tile_index
-                            .into_iter()
-                            .zip(batcher_info.tile_data.into_iter())
-                        {
+            // 2. 如果队列中切片不足一个 batch，尝试短时间等待更多数据来填充 batch
+            if self.queue.len() < batch_size {
+                if self.queue.is_empty() {
+                    // 队列完全为空，无限期阻塞直到第一个切片到来
+                    match self.tiler_rx.recv() {
+                        Ok(batcher_info) => {
                             self.queue.push_back(QueuedTile {
                                 task_id: batcher_info.task_id,
-                                tile_index: idx,
-                                tile_data: data,
-                                image_meta: batcher_info.image_meta.clone(),
+                                tile_index: batcher_info.tile_index,
+                                tile_data: batcher_info.tile_data,
+                                image_meta: batcher_info.image_meta,
                             });
                         }
+                        Err(_) => break, // 通道关闭
                     }
-                    Err(_) => {
-                        // 通道关闭，退出循环
-                        break;
+                }
+
+                // 此时队列已经至少有一个切片，尝试在短时间内继续等待更多切片以填满 batch
+                while self.queue.len() < batch_size {
+                    // 使用 50ms 等待超时。如果 50ms 内没有新切片，则直接进入下一步处理已有切片。
+                    match self.tiler_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(batcher_info) => {
+                            self.queue.push_back(QueuedTile {
+                                task_id: batcher_info.task_id,
+                                tile_index: batcher_info.tile_index,
+                                tile_data: batcher_info.tile_data,
+                                image_meta: batcher_info.image_meta,
+                            });
+                        }
+                        Err(_) => break, // 等待超时或通道关闭
                     }
                 }
             }
 
             // 3. 从队列中取出指定数量的切片进行批处理
-            let current_batch_size = min(self.get_batch_size(), self.queue.len());
+            let current_batch_size = min(batch_size, self.queue.len());
             let mut batch_task_ids = Vec::with_capacity(current_batch_size);
             let mut batch_tile_indices = Vec::with_capacity(current_batch_size);
             let mut batch_tiles_data = Vec::with_capacity(current_batch_size);
