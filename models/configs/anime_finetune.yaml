@@ -39,10 +39,10 @@ gan:
   disc_update_ratio: 1
 
 save_metrics:
-  psnr: true
-  ssim: true
+  psnr: false
+  ssim: false
   lpips: true
-  val_loss : false
+  val_loss : true
 
 online_data_options:
   crop_size: 128
