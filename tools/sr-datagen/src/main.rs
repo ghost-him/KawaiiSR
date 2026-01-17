@@ -202,7 +202,7 @@ fn process_single_image(input: &InputFile, folder_a: &Path) -> Result<()> {
             break;
         }
 
-        let current_img = img.resize_exact(new_w, new_h, FilterType::Bicubic);
+        let current_img = img.resize_exact(new_w, new_h, FilterType::CatmullRom);
         save(
             &current_img,
             rel_parent,
