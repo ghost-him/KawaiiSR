@@ -16,7 +16,6 @@ pub mod strong_gt;
 ///    - Level 0: 原始图像 (如果有损则先 Bicubic 下采样 4 倍)
 ///    - Level N: 递归 2 倍下采样，直到下一次下采样会导致短边 < 128px
 ///    - Final Level: 如果当前短边 > 128px，则缩放到短边正好为 128px
-/// 2. 文件夹 B：针对 A 中的每一张图片进行锐化处理 (使用 strong_gt 逻辑)
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -54,11 +53,8 @@ fn main() -> Result<()> {
     }
 
     let folder_a = cli.output_dir.join("A");
-    let folder_b = cli.output_dir.join("B");
-
     // 创建输出目录
     fs::create_dir_all(&folder_a).context("无法创建文件夹 A")?;
-    fs::create_dir_all(&folder_b).context("无法创建文件夹 B")?;
 
     println!("--- SR 数据集生成任务 ---");
     println!("输入目录 (GT): {}", cli.input_dir.display());
@@ -66,7 +62,6 @@ fn main() -> Result<()> {
         println!("输入目录 (Lossy): {}", lossy.display());
     }
     println!("输出文件夹 A (HR/Multi-scale): {}", folder_a.display());
-    println!("输出文件夹 B (Sharpened/GT): {}", folder_b.display());
     println!("------------------------");
 
     println!("\n[1/2] 正在扫描输入文件...");
@@ -87,7 +82,7 @@ fn main() -> Result<()> {
 
     // 开始并行处理
     input_files.into_par_iter().for_each(|input| {
-        if let Err(e) = process_single_image(&input, &folder_a, &folder_b) {
+        if let Err(e) = process_single_image(&input, &folder_a) {
             eprintln!("\n[错误] 处理文件 {} 失败: {}", input.path.display(), e);
         }
 
@@ -147,11 +142,11 @@ fn scan_dir(root: &Path, is_lossy: bool) -> Vec<InputFile> {
 }
 
 /// 处理单张图片，执行多尺度下采样及锐化
-fn process_single_image(input: &InputFile, folder_a: &Path, folder_b: &Path) -> Result<()> {
+fn process_single_image(input: &InputFile, folder_a: &Path) -> Result<()> {
     let mut img = image::open(&input.path)
         .with_context(|| format!("无法加载图像: {}", input.path.display()))?;
 
-    // 如果是有损图像，先进行 4x Bicubic 下采样
+    // 如果是有损图像，先进行 2x Bicubic 下采样
     if input.is_lossy {
         let (w, h) = img.dimensions();
         // 使用 CatmullRom 作为 Bicubic 替代
@@ -185,7 +180,7 @@ fn process_single_image(input: &InputFile, folder_a: &Path, folder_b: &Path) -> 
     let rel_parent = input.rel_path.parent().unwrap_or(Path::new(""));
 
     // 1. Level 0 (Original or Downsampled Lossy)
-    save_and_sharpen(&img, rel_parent, &stem, "lv0", folder_a, folder_b)?;
+    save(&img, rel_parent, &stem, "lv0", folder_a)?;
 
     // 2. Level N (Recursive Downsampling)
     let mut last_processed_w = orig_w;
@@ -194,6 +189,7 @@ fn process_single_image(input: &InputFile, folder_a: &Path, folder_b: &Path) -> 
 
     loop {
         let current_short_side = last_processed_w.min(last_processed_h);
+        // 跳过短边小于 150px 的情况
         if current_short_side / 2 < 150 {
             break;
         }
@@ -207,13 +203,12 @@ fn process_single_image(input: &InputFile, folder_a: &Path, folder_b: &Path) -> 
         }
 
         let current_img = img.resize_exact(new_w, new_h, FilterType::Lanczos3);
-        save_and_sharpen(
+        save(
             &current_img,
             rel_parent,
             &stem,
             &format!("lv{}", level),
             folder_a,
-            folder_b,
         )?;
 
         last_processed_w = new_w;
@@ -224,35 +219,24 @@ fn process_single_image(input: &InputFile, folder_a: &Path, folder_b: &Path) -> 
     Ok(())
 }
 
-/// 将单个图像实例保存到 A 文件夹，并生成锐化版本保存到 B 文件夹
-fn save_and_sharpen(
+/// 将单个图像实例保存到 A 文件夹
+fn save(
     img: &DynamicImage,
     rel_parent: &Path,
     stem: &str,
     suffix: &str,
     folder_a: &Path,
-    folder_b: &Path,
 ) -> Result<()> {
     let filename = format!("{}_{}.png", stem, suffix);
 
     let target_a_dir = folder_a.join(rel_parent);
-    let target_b_dir = folder_b.join(rel_parent);
 
     fs::create_dir_all(&target_a_dir)?;
-    fs::create_dir_all(&target_b_dir)?;
 
     let out_a_path = target_a_dir.join(&filename);
-    //let out_b_path = target_b_dir.join(&filename);
 
     // 文件夹 A: 保存当前处理图 (PNG format)
     img.save_with_format(&out_a_path, image::ImageFormat::Png)
         .with_context(|| format!("无法保存图片到 A: {}", out_a_path.display()))?;
-
-    // 文件夹 B: 生成并保存锐化版本
-    // let sharpened = strong_gt::anime_sharpen(img, 2, 32);
-    // sharpened
-    //     .save_with_format(&out_b_path, image::ImageFormat::Png)
-    //     .with_context(|| format!("无法保存锐化图片到 B: {}", out_b_path.display()))?;
-
     Ok(())
 }
