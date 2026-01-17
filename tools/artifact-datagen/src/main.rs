@@ -58,7 +58,7 @@ struct Cli {
     /// 对图像应用WebP压缩，并指定以逗号分隔的质量列表 (1-100)
     #[arg(long)]
     webp_quality: Option<String>,
-    
+
     /// 跳过确认提示，直接开始处理
     #[arg(short, long)]
     yes: bool,
@@ -100,11 +100,11 @@ fn main() -> Result<()> {
             .filter(|&q| q > 0 && q <= 100)
             .collect()
     });
-    
+
     if jpeg_quality.is_empty() && webp_quality.is_empty() {
         anyhow::bail!("必须至少提供一种压缩选项: --jpeg-quality 或 --webp-quality");
     }
-    
+
     let images_path = cli.output_dir.join(&cli.images_dir_name);
 
     let config = Config {
@@ -154,11 +154,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-
 fn run_processing(config: &Config) -> Result<()> {
     println!("\n[1/4] 开始设置输出环境...");
     fs::create_dir_all(&config.images_path).context("无法创建图像文件夹")?;
-    
+
     let index_file_path = config.output_dir.join("dataset_index.csv");
     let writer = Writer::from_path(&index_file_path).context("无法创建CSV索引文件")?;
     let csv_writer = Arc::new(Mutex::new(writer));
@@ -202,11 +201,11 @@ fn run_processing(config: &Config) -> Result<()> {
         }
 
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        
+
         let result: Result<Vec<(String, u8)>> = match extension.to_lowercase().as_str() {
             "svg" => process_svg(&path, config),
             "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "webp" => process_bitmap(&path, config),
-            _ => Ok(Vec::new()), 
+            _ => Ok(Vec::new()),
         };
 
         match result {
@@ -269,8 +268,7 @@ fn render_svg_to_rgb(tree: &usvg::Tree, size: u32) -> Result<RgbImage> {
         rgb_data.extend_from_slice(&chunk[0..3]);
     }
 
-    let img = RgbImage::from_raw(size, size, rgb_data)
-        .context("无法从Pixmap数据创建RGB图像")?;
+    let img = RgbImage::from_raw(size, size, rgb_data).context("无法从Pixmap数据创建RGB图像")?;
     Ok(img)
 }
 
@@ -297,15 +295,17 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
     for (i, patch) in patches.into_iter().enumerate() {
         // 改动: 调用 ensure_rgb 并重命名变量
         let rgb_patch = ensure_rgb(&patch);
-        
+
         let (w, h) = rgb_patch.dimensions();
         // 确保图像尺寸为偶数，这对某些压缩算法（如JPEG的某些子采样模式）是必需的
         let new_w = w - (w % 2);
         let new_h = h - (h % 2);
-        if new_w == 0 || new_h == 0 { continue; }
+        if new_w == 0 || new_h == 0 {
+            continue;
+        }
         // 改动: 使用 rgb_patch 进行裁剪
         let base_gt_image = image::imageops::crop_imm(&rgb_patch, 0, 0, new_w, new_h).to_image();
-        
+
         let patch_stem = if is_multi_patch {
             format!("{}_p{}", stem, i)
         } else {
@@ -321,7 +321,6 @@ fn process_bitmap(path: &Path, config: &Config) -> Result<Vec<(String, u8)>> {
     Ok(all_records)
 }
 
-
 /// 将图像裁剪成图块 (无变动)
 fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicImage> {
     let (width, height) = img.dimensions();
@@ -329,15 +328,27 @@ fn crop_image_with_overlap(img: &DynamicImage, patch_size: u32) -> Vec<DynamicIm
 
     let mut y = 0;
     while y < height {
-        let actual_y = if y + patch_size > height { height.saturating_sub(patch_size) } else { y };
+        let actual_y = if y + patch_size > height {
+            height.saturating_sub(patch_size)
+        } else {
+            y
+        };
         let mut x = 0;
         while x < width {
-            let actual_x = if x + patch_size > width { width.saturating_sub(patch_size) } else { x };
+            let actual_x = if x + patch_size > width {
+                width.saturating_sub(patch_size)
+            } else {
+                x
+            };
             patches.push(img.crop_imm(actual_x, actual_y, patch_size, patch_size));
-            if x >= actual_x && x + patch_size >= width { break; }
+            if x >= actual_x && x + patch_size >= width {
+                break;
+            }
             x += patch_size;
         }
-        if y >= actual_y && y + patch_size >= height { break; }
+        if y >= actual_y && y + patch_size >= height {
+            break;
+        }
         y += patch_size;
     }
     patches
@@ -373,7 +384,6 @@ fn process_single_image(
     Ok(all_records)
 }
 
-
 /// 从给定的 Ground Truth 图像生成所有配置的压缩版本，并返回 (文件名, 标签) 记录。
 /// 标签 0 代表原始图像，标签 1 代表压缩图像。
 fn generate_compressed_versions(
@@ -408,11 +418,8 @@ fn generate_compressed_versions(
     // 3. 应用并保存WebP压缩版本, 记录为标签 1
     for &quality in &config.webp_quality {
         // 改动: 使用 Encoder::from_rgb 替代 from_rgba
-        let encoder = webp::Encoder::from_rgb(
-            gt_image.as_raw(),
-            gt_image.width(),
-            gt_image.height(),
-        );
+        let encoder =
+            webp::Encoder::from_rgb(gt_image.as_raw(), gt_image.width(), gt_image.height());
         let memory = encoder.encode(quality as f32);
         let compressed_img = image::load_from_memory_with_format(&memory, ImageFormat::WebP)?;
 
@@ -425,7 +432,6 @@ fn generate_compressed_versions(
 
     Ok(records)
 }
-
 
 /// 确保图像是Rgb8格式
 // 改动: 整个函数被重写为 ensure_rgb
