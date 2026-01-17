@@ -12,8 +12,8 @@ train:
   enable_cuda_prefetch: true
   allow_tf32: true
   
-  train_data_path: /DATA/ANIME/data  # TODO: 请修改为您实际的动漫数据集路径
-  val_data_path: /DATA/ANIME/vali    # TODO: 请修改为您实际的验证集路径
+  train_data_path: /DATA/anime/train  # TODO: 请修改为您实际的动漫数据集路径
+  val_data_path: /DATA/anime/test    # TODO: 请修改为您实际的验证集路径
   val_every: 1
   log_every: 100
   early_stopping_patience: 15
@@ -39,25 +39,25 @@ gan:
   disc_update_ratio: 1
 
 save_metrics:
-  psnr: true
-  ssim: true
+  psnr: false
+  ssim: false
   lpips: true
-  val_loss : false
+  val_loss : true
 
 online_data_options:
   crop_size: 128
   scale: 2
   downsample_filters: [nearest, bilinear, bicubic, lanczos]
-  noise_p: 0.1         # 动漫源通常比较干净，减少噪声增强
+  noise_p: 0.0         # 根据要求，不对图片做加噪
   noise_std_min: 0.001
   noise_std_max: 0.01
-  blur_p: 0.1
+  blur_p: 0.0          # 同样关闭模糊以获得更干净的下采样
   blur_sigma_min: 0.4
   blur_sigma_max: 1.0
-  jpeg_p: 0.3          # 增加抗压缩能力
-  jpeg_quality_min: 40 # 动漫源常见压缩
+  jpeg_p: 0.0          # 关闭 JPEG 压缩噪声
+  jpeg_quality_min: 40
   jpeg_quality_max: 95
-  webp_p: 0.3
+  webp_p: 0.0          # 关闭 WebP 压缩噪声
   webp_quality_min: 40
   webp_quality_max: 95
 
