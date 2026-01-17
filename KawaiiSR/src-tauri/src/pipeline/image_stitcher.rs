@@ -1,6 +1,6 @@
-use crate::pipeline::tiling_utils::{TilingInfo, BORDER, OVERLAP, TILE_SIZE};
-use crate::{pipeline::task_meta::ImageMeta, sr_manager::ImageInfo};
 use crate::pipeline::task_meta::TaskType;
+use crate::pipeline::tiling_utils::TilingInfo;
+use crate::{pipeline::task_meta::ImageMeta, sr_manager::ImageInfo};
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashSet;
 use ndarray::{s, Array3, Array4, Axis};
@@ -118,8 +118,14 @@ impl ImageStitcherInner {
                 // 获取或创建任务进度
                 let task_key = (task_id, task_type.clone());
                 let progress = self.tasks.entry(task_key).or_insert_with(|| {
-                    let info =
-                        TilingInfo::new(image_meta.original_height, image_meta.original_width);
+                    let info = TilingInfo::new_with_config(
+                        image_meta.original_height,
+                        image_meta.original_width,
+                        image_meta.tile_height,
+                        image_meta.tile_width,
+                        image_meta.border,
+                        image_meta.overlap,
+                    );
                     let shape = (3, info.padded_h * scale, info.padded_w * scale);
 
                     TaskProgress {
@@ -134,24 +140,24 @@ impl ImageStitcherInner {
                 let (start_y, start_x) = progress.info.get_tile_start(tile_index);
 
                 // 计算裁剪大小（只保留中心区域，去除重叠部分）
-                let out_tile_size = TILE_SIZE * scale;
-                let out_overlap = OVERLAP * scale;
+                let out_tile_h = image_meta.tile_height * scale;
+                let out_tile_w = image_meta.tile_width * scale;
+                let out_overlap = image_meta.overlap * scale;
                 let crop = out_overlap / 2;
-                let effective_size = out_tile_size - 2 * crop;
+
+                let effective_size_h = out_tile_h - 2 * crop;
+                let effective_size_w = out_tile_w - 2 * crop;
 
                 let sy = start_y * scale;
                 let sx = start_x * scale;
 
-                // 将 tile 的中心 96*96 (或对应缩放后的尺寸) 区域直接存入结果
-                let cropped_tile = tile_data.slice(s![
-                    ..,
-                    crop..out_tile_size - crop,
-                    crop..out_tile_size - crop
-                ]);
+                // 将 tile 的中心区域直接存入结果
+                let cropped_tile =
+                    tile_data.slice(s![.., crop..out_tile_h - crop, crop..out_tile_w - crop]);
                 let mut acc_slice = progress.accumulated_data.slice_mut(s![
                     ..,
-                    sy + crop..sy + crop + effective_size,
-                    sx + crop..sx + crop + effective_size
+                    sy + crop..sy + crop + effective_size_h,
+                    sx + crop..sx + crop + effective_size_w
                 ]);
                 acc_slice.assign(&cropped_tile);
 
@@ -182,10 +188,10 @@ impl ImageStitcherInner {
                     let final_progress = self.tasks.remove(&task_key).unwrap();
 
                     // 裁剪掉填充和边缘
-                    let h_start = BORDER * scale;
-                    let h_end = (BORDER + image_meta.original_height) * scale;
-                    let w_start = BORDER * scale;
-                    let w_end = (BORDER + image_meta.original_width) * scale;
+                    let h_start = image_meta.border * scale;
+                    let h_end = (image_meta.border + image_meta.original_height) * scale;
+                    let w_start = image_meta.border * scale;
+                    let w_end = (image_meta.border + image_meta.original_width) * scale;
 
                     let final_image = final_progress
                         .accumulated_data

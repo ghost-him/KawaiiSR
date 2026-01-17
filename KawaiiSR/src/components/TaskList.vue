@@ -60,6 +60,9 @@ function statusType(status: string) {
             </n-tooltip>
           </template>
           <template #description>
+            <div style="font-size: 12px; color: #888; margin-top: 4px;">
+              {{ task.modelName }} | {{ task.scaleFactor }}x
+            </div>
             <n-space justify="space-between" align="center" style="margin-top: 8px;">
               <n-tag :type="statusType(task.status)" size="small" :bordered="false" round>
                 {{ formatStatus(task.status) }}

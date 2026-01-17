@@ -1,0 +1,26 @@
+# KawaiiSR 模型配置文件
+# 此文件定义了所有可用的超分辨率模型及其参数
+
+[models.kawaii_sr]
+file_path = "onnx/kawaii_sr.onnx"
+# 模型期望的输入尺寸
+input_width = 128
+input_height = 128
+# 切块时的重叠大小（用于避免边界伪影）
+overlap = 32
+# 边界填充大小（在切块前添加的边界）
+border = 64
+
+
+# 如果要添加自己的模型，则将下面的配置取消注释并进行修改
+# [models.kawaii_sr_anime]
+# file_path = "onnx/kawaii_sr_128x64.onnx"
+# input_width = 64
+# input_height = 128
+# overlap = 16
+# border = 32
+
+# 默认模型
+[defaults]
+model_name = "kawaii_sr"
+border = 64

@@ -1,11 +1,12 @@
 pub mod app_state;
+pub mod config;
 pub mod id_generator;
 pub mod logger;
 pub mod pipeline;
 pub mod sr_manager;
 
 use crate::app_state::AppState;
-use crate::sr_manager::{ModelName, SRInfo, TaskMetaStruct};
+use crate::sr_manager::{SRInfo, TaskMetaStruct};
 use std::sync::Arc;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -30,15 +31,20 @@ async fn get_task_metadata(
 async fn run_super_resolution(
     state: tauri::State<'_, Arc<AppState>>,
     input_path: String,
+    model_name: String,
     scale_factor: u32,
 ) -> Result<usize, String> {
-    tracing::info!("Command 'run_super_resolution' invoked for {}", input_path);
+    tracing::info!(
+        "Command 'run_super_resolution' invoked for {}, model: {}",
+        input_path,
+        model_name
+    );
 
     let manager = state.sr_pipline.clone();
 
     let sr_info = SRInfo {
         input_path,
-        model_name: ModelName::KawaiiSR,
+        model_name,
         scale_factor,
         output_path: None,
     };
@@ -163,6 +169,25 @@ async fn save_result_image(
 
 use tauri::Manager;
 
+/// 获取可用的模型列表
+#[tauri::command]
+async fn get_available_models(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<String>, String> {
+    let manager = state.sr_pipline.clone();
+    let models = manager.get_available_models().await;
+    Ok(models)
+}
+
+/// 获取默认模型名称
+#[tauri::command]
+async fn get_default_model(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let manager = state.sr_pipline.clone();
+    Ok(manager.get_default_model().await)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -181,7 +206,9 @@ pub fn run() {
             get_image_data,
             get_result_image,
             save_result_image,
-            get_task_metadata
+            get_task_metadata,
+            get_available_models,
+            get_default_model,
         ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {

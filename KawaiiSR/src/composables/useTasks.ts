@@ -62,6 +62,24 @@ export function useTasks() {
         }
     }
 
+    async function getAvailableModels(): Promise<string[]> {
+        try {
+            return await invoke<string[]>("get_available_models");
+        } catch (err) {
+            console.error("Failed to fetch available models:", err);
+            return [];
+        }
+    }
+
+    async function getDefaultModel(): Promise<string> {
+        try {
+            return await invoke<string>("get_default_model");
+        } catch (err) {
+            console.error("Failed to fetch default model:", err);
+            return "";
+        }
+    }
+
     return {
         tasks,
         activeTaskId,
@@ -70,6 +88,8 @@ export function useTasks() {
         updateTask,
         selectTask,
         fetchResultImage,
-        cancelTask
+        cancelTask,
+        getAvailableModels,
+        getDefaultModel
     };
 }

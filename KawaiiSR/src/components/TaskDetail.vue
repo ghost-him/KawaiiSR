@@ -134,6 +134,9 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
           <n-descriptions-item label="输入路径">
             <n-text style="font-family: v-mono, monospace; word-break: break-all;">{{ task.inputPath }}</n-text>
           </n-descriptions-item>
+          <n-descriptions-item label="模型">
+            {{ task.modelName }}
+          </n-descriptions-item>
           <n-descriptions-item label="倍数">
             {{ task.scaleFactor }}x
           </n-descriptions-item>
