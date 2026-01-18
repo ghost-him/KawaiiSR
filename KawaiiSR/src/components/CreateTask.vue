@@ -27,6 +27,7 @@ interface ModelConfig {
   input_height: number;
   overlap: number;
   border: number;
+  batch_size: number;
   description: string;
 }
 

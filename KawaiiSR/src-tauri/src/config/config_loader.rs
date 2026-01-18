@@ -141,6 +141,11 @@ impl ConfigManager {
             .unwrap_or("output")
             .to_string();
 
+        let batch_size = config
+            .get("batch_size")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(1) as i32;
+
         let description = config
             .get("description")
             .and_then(|v| v.as_str())
@@ -160,6 +165,7 @@ impl ConfigManager {
             scale,
             input_node,
             output_node,
+            batch_size,
             normalization,
             description,
         };

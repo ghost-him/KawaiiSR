@@ -211,8 +211,12 @@ impl Default for SRManagerInner {
             tiler_tx_batcher,
             cancelled_tasks.clone(),
         );
-        let tensor_batcher =
-            TensorBatcher::new(tiler_rx_batcher, batcher_tx_onnx, cancelled_tasks.clone());
+        let tensor_batcher = TensorBatcher::new(
+            tiler_rx_batcher,
+            batcher_tx_onnx,
+            cancelled_tasks.clone(),
+            config_manager.clone(),
+        );
         let onnx_session = OnnxSession::new(
             batcher_rx_onnx,
             onnx_tx_stitcher,

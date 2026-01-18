@@ -1,3 +1,4 @@
+use crate::config::ConfigManager;
 use crate::pipeline::onnx_session::OnnxSessionInfo;
 use crate::pipeline::task_meta::{ImageMeta, TaskType};
 use crossbeam_channel::RecvTimeoutError;
@@ -37,11 +38,13 @@ impl TensorBatcher {
         tiler_rx: Receiver<BatcherInfo>,
         onnx_tx: Sender<OnnxSessionInfo>,
         cancelled_tasks: Arc<DashSet<usize>>,
+        config_manager: Arc<ConfigManager>,
     ) -> Self {
         let mut inner = TensorBatcherInner {
             tiler_rx,
             onnx_tx,
             cancelled_tasks,
+            config_manager,
             queues: HashMap::new(),
             queue_timers: HashMap::new(),
         };
@@ -58,14 +61,26 @@ struct TensorBatcherInner {
     tiler_rx: Receiver<BatcherInfo>,
     onnx_tx: Sender<OnnxSessionInfo>,
     cancelled_tasks: Arc<DashSet<usize>>,
+    config_manager: Arc<ConfigManager>,
     queues: HashMap<String, VecDeque<QueuedTile>>,
     queue_timers: HashMap<String, Instant>,
 }
 
 impl TensorBatcherInner {
-    // 获取当前批处理大小，后续可以根据性能动态调整
-    fn get_batch_size(&self) -> usize {
-        2
+    // 获取当前模型设定的 batch_size
+    fn get_model_batch_size(&self, model_name: &str) -> usize {
+        match self.config_manager.get_model(model_name) {
+            Ok(config) => {
+                if config.batch_size == -1 {
+                    // 如果支持动态 batch_size，设定一个默认的高性能 batch_size
+                    // 目前设定为 2，后续可以根据 GPU 内存动态调整
+                    2
+                } else {
+                    config.batch_size as usize
+                }
+            }
+            Err(_) => 1, // 找不到配置则回退到 batch_size = 1
+        }
     }
 
     fn get_max_wait_time(&self) -> Duration {
@@ -74,7 +89,6 @@ impl TensorBatcherInner {
 
     fn execute(&mut self) {
         tracing::info!("[TensorBatcher] Started");
-        let batch_size = self.get_batch_size();
         let max_wait_time = self.get_max_wait_time();
         let recv_wait_time = Duration::from_millis(20);
 
@@ -109,6 +123,7 @@ impl TensorBatcherInner {
 
             let model_names: Vec<String> = self.queues.keys().cloned().collect();
             for model_name in model_names {
+                let batch_size = self.get_model_batch_size(&model_name);
                 let queue = self.queues.get_mut(&model_name).unwrap();
 
                 // 移除已取消任务

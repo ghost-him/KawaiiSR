@@ -44,6 +44,8 @@ pub struct ModelConfig {
     pub input_node: String,
     /// ONNX 输出节点名称
     pub output_node: String,
+    /// 运行时的 batch_size，如果为 -1 则表示支持动态 batch_size
+    pub batch_size: i32,
     /// 归一化配置
     pub normalization: NormalizationConfig,
     /// 模型描述
@@ -160,6 +162,7 @@ mod tests {
             scale: 2,
             input_node: "input".to_string(),
             output_node: "output".to_string(),
+            batch_size: 1,
             normalization: NormalizationConfig {
                 range: NormalizationRange::ZeroToOne,
                 mean: None,
@@ -187,6 +190,7 @@ mod tests {
             scale: 2,
             input_node: "input".to_string(),
             output_node: "output".to_string(),
+            batch_size: 1,
             normalization: NormalizationConfig {
                 range: NormalizationRange::ZeroToOne,
                 mean: None,

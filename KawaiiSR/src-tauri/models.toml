@@ -19,6 +19,8 @@ scale = 2
 input_node = "input"
 # ONNX 输出节点名称
 output_node = "output"
+# 批处理大小，-1 表示支持动态 batch 大小
+batch_size = -1
 # 模型描述
 description = "KawaiiSR 动漫超分辨率模型，2倍放大"
 # 归一化配置（该配置一定要放在最后，不然无法正确的解析）
@@ -49,4 +51,3 @@ range = "zero_to_one"           # zero_to_one 表示将输入图像像素值归�
 # 默认模型
 [defaults]
 model_name = "KawaiiSR"
-border = 64
