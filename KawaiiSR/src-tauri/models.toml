@@ -1,7 +1,9 @@
 # KawaiiSR 模型配置文件
 # 此文件定义了所有可用的超分辨率模型及其参数
+# 可以根据需要添加或修改模型配置
+# 不推荐修改该文件中的已有模型配置，建议添加新的模型配置
 
-[models.kawaii_sr]
+[models.KawaiiSR]
 # 该模型的输入为 RGB 的 (B, C, H, W) = (-1, 3, 128, 128)，-1表示动态batch大小
 file_path = "onnx/kawaii_sr.onnx"
 # 模型期望的输入尺寸
@@ -11,6 +13,19 @@ input_height = 128 # H
 overlap = 32
 # 边界填充大小（在切块前添加的边界）
 border = 64
+# 模型固有的放大倍率
+scale = 2
+# ONNX 输入节点名称
+input_node = "input"
+# ONNX 输出节点名称
+output_node = "output"
+# 模型描述
+description = "KawaiiSR 动漫超分辨率模型，2倍放大"
+# 归一化配置（该配置一定要放在最后，不然无法正确的解析）
+[models.KawaiiSR.normalization]
+range = "zero_to_one"           # zero_to_one 表示将输入图像像素值归一化到 [0, 1] 范围内, minus_one_to_one 表示归一化到 [-1, 1] 范围内, zero_to_255 表示保持在 [0, 255] 范围内
+# mean = [0.485, 0.456, 0.406]  # 可选，用于高级归一化，当前模型无需配置该项
+# std = [0.229, 0.224, 0.225]   # 可选，用于高级归一化，当前模型无需配置该项
 
 
 # 如果要添加自己的模型，则将下面的配置取消注释并进行修改
@@ -21,8 +36,17 @@ border = 64
 # input_height = 128
 # overlap = 16
 # border = 32
+# scale = 4
+# input_node = "input"
+# output_node = "output"
+# description = "自定义动漫模型，4倍放大"
+# [models.kawaii_sr_anime.normalization]
+# range = "zero_to_one"
+# mean = [0.485, 0.456, 0.406]  # 可选，用于高级归一化
+# std = [0.229, 0.224, 0.225]   # 可选，用于高级归一化
+
 
 # 默认模型
 [defaults]
-model_name = "kawaii_sr"
+model_name = "KawaiiSR"
 border = 64

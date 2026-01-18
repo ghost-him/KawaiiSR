@@ -26,10 +26,12 @@ interface ModelConfig {
   input_height: number;
   overlap: number;
   border: number;
+  description: string;
 }
 
 const availableModels = ref<{ label: string, value: string }[]>([]);
 const selectedModel = ref<string>("");
+const selectedModelDescription = ref<string>("");
 const scaleFactor = ref<number>(2);
 
 // 自定义切块参数
@@ -52,10 +54,13 @@ onMounted(async () => {
 // 当模型改变时，更新默认参数
 watch(selectedModel, async (newModel) => {
   if (newModel) {
+    console.log("Selected model changed to:", newModel);
     try {
       const config = await invoke<ModelConfig>("get_model_config", { modelName: newModel });
+      console.log("Fetched model config:", config);
       modelDefaultOverlap.value = config.overlap;
       modelDefaultBorder.value = config.border;
+      selectedModelDescription.value = config.description;
       
       // 如果没有开启自定义，则同步更新显示的值
       if (!useCustomTiling.value) {
@@ -89,7 +94,6 @@ async function startNewTask() {
       const id = await invoke<number>("run_super_resolution", {
         inputPath: inputPath,
         modelName: modelName,
-        scaleFactor: scale,
         overlap: useCustomTiling.value ? customOverlap.value : null,
         border: useCustomTiling.value ? customBorder.value : null
       });
@@ -135,12 +139,17 @@ async function startNewTask() {
         
         <n-form label-placement="left" label-width="100" style="margin-top: 20px;">
           <n-form-item label="选择模型">
-            <n-select 
-              v-model:value="selectedModel" 
-              :options="availableModels" 
-              placeholder="加载中..."
-              style="width: 100%"
-            />
+            <div class="model-selection-wrapper">
+              <n-select 
+                v-model:value="selectedModel" 
+                :options="availableModels" 
+                placeholder="加载中..."
+                class="model-select"
+              />
+              <n-text v-if="selectedModelDescription" class="model-description">
+                {{ selectedModelDescription }}
+              </n-text>
+            </div>
           </n-form-item>
           
           <!--当前不支持选择缩放倍数-->
@@ -204,6 +213,36 @@ async function startNewTask() {
 <style scoped>
 .createTaskPage {
   width: 100%;
+}
+
+.model-selection-wrapper {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 16px;
+}
+
+.model-select {
+  width: 200px;
+  flex-shrink: 0;
+}
+
+.model-description {
+  flex: 1;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 当宽度不足时，隐藏描述或调整布局 */
+@media (max-width: 800px) {
+  .model-description {
+    display: none;
+  }
+  .model-select {
+    width: 100%;
+  }
 }
 
 .fade-enter-active, .fade-leave-active {

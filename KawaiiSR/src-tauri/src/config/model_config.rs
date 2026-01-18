@@ -1,6 +1,28 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+/// 归一化范围枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NormalizationRange {
+    /// [0, 1]
+    ZeroToOne,
+    /// [-1, 1]
+    MinusOneToOne,
+    /// [0, 255]
+    ZeroTo255,
+}
+
+/// 归一化配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormalizationConfig {
+    /// 归一化范围
+    pub range: NormalizationRange,
+    /// 均值（可选，用于高级归一化）
+    pub mean: Option<Vec<f32>>,
+    /// 标准差（可选，用于高级归一化）
+    pub std: Option<Vec<f32>>,
+}
+
 /// 模型配置，包含模型路径、输入尺寸和切块参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -16,6 +38,16 @@ pub struct ModelConfig {
     pub overlap: usize,
     /// 边界填充大小（边框）
     pub border: usize,
+    /// 模型固有的放大倍率
+    pub scale: u32,
+    /// ONNX 输入节点名称
+    pub input_node: String,
+    /// ONNX 输出节点名称
+    pub output_node: String,
+    /// 归一化配置
+    pub normalization: NormalizationConfig,
+    /// 模型描述
+    pub description: String,
 }
 
 impl ModelConfig {
@@ -91,6 +123,15 @@ mod tests {
             input_height: 128,
             overlap: 32,
             border: 16, // border < overlap
+            scale: 2,
+            input_node: "input".to_string(),
+            output_node: "output".to_string(),
+            normalization: NormalizationConfig {
+                range: NormalizationRange::ZeroToOne,
+                mean: None,
+                std: None,
+            },
+            description: "Test model".to_string(),
         };
 
         let validated = config.validate().unwrap();
@@ -109,6 +150,15 @@ mod tests {
             input_height: 128,
             overlap: 32,
             border: 64,
+            scale: 2,
+            input_node: "input".to_string(),
+            output_node: "output".to_string(),
+            normalization: NormalizationConfig {
+                range: NormalizationRange::ZeroToOne,
+                mean: None,
+                std: None,
+            },
+            description: "Test model".to_string(),
         };
 
         assert!(config.validate().is_err());

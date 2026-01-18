@@ -1,5 +1,5 @@
 use crate::config::{ConfigManager, ModelConfig};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use ort::{
     execution_providers::DirectMLExecutionProvider,
@@ -35,10 +35,16 @@ impl ModelManager {
         let session = Arc::new(Mutex::new(self.init_session(&model_config)?));
 
         // 3. 存入缓存
-        self.sessions.insert(model_name.to_string(), session.clone());
+        self.sessions
+            .insert(model_name.to_string(), session.clone());
 
         tracing::info!("[ModelManager] Model '{}' loaded and cached", model_name);
         Ok(session)
+    }
+
+    /// 获取模型配置
+    pub fn get_config(&self, model_name: &str) -> Result<Arc<ModelConfig>> {
+        self.config_manager.get_model(model_name)
     }
 
     /// 初始化 ONNX Session
@@ -60,13 +66,17 @@ impl ModelManager {
             .commit_from_file(&model_path)
         {
             Ok(s) => {
-                tracing::info!("[ModelManager] ✓ Model '{}' loaded with DirectML", config.name);
+                tracing::info!(
+                    "[ModelManager] ✓ Model '{}' loaded with DirectML",
+                    config.name
+                );
                 s
             }
             Err(e) => {
                 tracing::error!(
                     "[ModelManager] ✗ DirectML failed for '{}': {:?}, falling back to CPU",
-                    config.name, e
+                    config.name,
+                    e
                 );
                 Session::builder()?
                     .with_optimization_level(GraphOptimizationLevel::All)?

@@ -25,8 +25,6 @@ pub struct SRInfo {
     pub input_path: String,
     // 模型名称
     pub model_name: String,
-    // 放大的倍数
-    pub scale_factor: u32,
     // 重叠大小（可选）
     pub overlap: Option<usize>,
     // 边界填充大小（可选）
@@ -199,6 +197,7 @@ impl Default for SRManagerInner {
             manager_rx_preprocessor,
             preprocessor_tx_tiler,
             cancelled_tasks.clone(),
+            config_manager.clone(),
         );
         let image_tiler = ImageTiler::new(
             preprocessor_rx_tiler,
@@ -303,7 +302,7 @@ impl SRManagerInner {
         let preproc_info = PreprocessorInfo {
             task_id: current_task_id,
             input_path: sr_info.input_path.clone(),
-            scale_factor: sr_info.scale_factor,
+            scale_factor: model_config.scale,
             model_name: sr_info.model_name.clone(),
             tile_width: model_config.input_width,
             tile_height: model_config.input_height,

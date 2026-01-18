@@ -32,7 +32,6 @@ async fn run_super_resolution(
     state: tauri::State<'_, Arc<AppState>>,
     input_path: String,
     model_name: String,
-    scale_factor: u32,
     overlap: Option<usize>,
     border: Option<usize>,
 ) -> Result<usize, String> {
@@ -49,7 +48,6 @@ async fn run_super_resolution(
     let sr_info = SRInfo {
         input_path,
         model_name,
-        scale_factor,
         overlap,
         border,
         output_path: None,

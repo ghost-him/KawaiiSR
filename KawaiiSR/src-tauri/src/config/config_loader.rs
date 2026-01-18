@@ -1,4 +1,4 @@
-use super::model_config::ModelConfig;
+use super::model_config::{ModelConfig, NormalizationConfig, NormalizationRange};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -123,6 +123,33 @@ impl ConfigManager {
             .and_then(|v| v.as_integer())
             .unwrap_or(64) as usize; // 默认 border = 64
 
+        let scale = config
+            .get("scale")
+            .and_then(|v| v.as_integer())
+            .ok_or_else(|| anyhow!("Missing 'scale' for model '{}'", name))?
+            as u32;
+
+        let input_node = config
+            .get("input_node")
+            .and_then(|v| v.as_str())
+            .unwrap_or("input")
+            .to_string();
+
+        let output_node = config
+            .get("output_node")
+            .and_then(|v| v.as_str())
+            .unwrap_or("output")
+            .to_string();
+
+        let description = config
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // 解析归一化配置
+        let normalization = Self::parse_normalization_config(name, config)?;
+
         let model_config = ModelConfig {
             name: name.to_string(),
             file_path,
@@ -130,10 +157,63 @@ impl ConfigManager {
             input_height,
             overlap,
             border,
+            scale,
+            input_node,
+            output_node,
+            normalization,
+            description,
         };
 
         // 验证配置（包括自动调整 border）
         model_config.validate()
+    }
+
+    /// 解析归一化配置
+    fn parse_normalization_config(name: &str, config: &toml::Value) -> Result<NormalizationConfig> {
+        let normalization_table = config.get("normalization").and_then(|v| v.as_table());
+
+        if let Some(norm) = normalization_table {
+            let range_str = norm
+                .get("range")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Missing 'normalization.range' for model '{}'", name))?;
+
+            let range = match range_str {
+                "zero_to_one" => NormalizationRange::ZeroToOne,
+                "minus_one_to_one" => NormalizationRange::MinusOneToOne,
+                "zero_to_255" => NormalizationRange::ZeroTo255,
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid normalization range '{}' for model '{}'",
+                        range_str,
+                        name
+                    ))
+                }
+            };
+
+            let mean = norm.get("mean").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_float())
+                    .map(|f| f as f32)
+                    .collect()
+            });
+
+            let std = norm.get("std").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_float())
+                    .map(|f| f as f32)
+                    .collect()
+            });
+
+            Ok(NormalizationConfig { range, mean, std })
+        } else {
+            // 默认归一化配置
+            Ok(NormalizationConfig {
+                range: NormalizationRange::ZeroToOne,
+                mean: None,
+                std: None,
+            })
+        }
     }
 
     /// 获取指定模型的配置
@@ -181,6 +261,11 @@ input_width = 128
 input_height = 128
 overlap = 32
 border = 64
+scale = 2
+input_node = "input"
+output_node = "output"
+[models.test_model.normalization]
+range = "zero_to_one"
 
 [defaults]
 model_name = "test_model"
@@ -200,12 +285,23 @@ file_path = "a.onnx"
 input_width = 128
 input_height = 128
 overlap = 32
+scale = 2
+input_node = "input"
+output_node = "output"
+[models.model_a.normalization]
+range = "zero_to_one"
 
 [models.model_b]
 file_path = "b.onnx"
 input_width = 256
 input_height = 256
 overlap = 32
+scale = 4
+input_node = "input"
+output_node = "output"
+[models.model_b.normalization]
+range = "zero_to_one"
+std = [0.229, 0.224, 0.225]
 
 [defaults]
 model_name = "model_a"
@@ -216,5 +312,14 @@ model_name = "model_a"
         assert_eq!(models.len(), 2);
         assert!(models.contains(&"model_a".to_string()));
         assert!(models.contains(&"model_b".to_string()));
+        if let Ok(model) = manager.get_model("model_b") {
+            assert_eq!(model.input_width, 256);
+            assert_eq!(model.scale, 4);
+            assert_eq!(model.normalization.range, NormalizationRange::ZeroToOne);
+            assert_eq!(model.normalization.std, Some(vec![0.229, 0.224, 0.225]));
+            assert!(model.normalization.mean.is_none());
+        } else {
+            panic!("Model 'model_b' should exist");
+        }
     }
 }

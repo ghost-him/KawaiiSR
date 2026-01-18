@@ -91,6 +91,7 @@ impl OnnxSessionInner {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // 从管理器获取对应的模型 Session 的 Mutex
         let session_mutex = self.model_manager.get_session(&onnx_info.model_name)?;
+        let model_config = self.model_manager.get_config(&onnx_info.model_name)?;
         let mut session = session_mutex
             .lock()
             .map_err(|e| format!("Failed to lock session: {}", e))?;
@@ -99,12 +100,14 @@ impl OnnxSessionInner {
         let input_tensor =
             Value::from_array(onnx_info.batch_data.as_standard_layout().into_owned())?;
 
-        // 2. 运行推理
-        let outputs = session.run(inputs!["input" => input_tensor])?;
+        // 2. 运行推理，使用动态的输入输出节点名称
+        let input_name = &model_config.input_node;
+        let output_name = &model_config.output_node;
+        let outputs = session.run(inputs![input_name => input_tensor])?;
 
         let output_value = outputs
-            .get("output")
-            .ok_or("Failed to get output 'output'")?;
+            .get(output_name)
+            .ok_or(format!("Failed to get output '{}'", output_name))?;
         let (output_shape, output_data) = output_value.try_extract_tensor::<f32>()?;
 
         // 3. 构建输出张量
