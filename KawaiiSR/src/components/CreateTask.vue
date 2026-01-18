@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { 
-  NButton, NCard, NSpace, NText, useMessage, NSelect, NInputNumber, NForm, NFormItem
+  NButton, NCard, NSpace, NText, useMessage, NSelect, NInputNumber, NForm, NFormItem, NSwitch
 } from "naive-ui";
 import { useTasks } from "../composables/useTasks";
 import type { Task } from "../types";
@@ -19,9 +19,25 @@ interface TaskMetaStruct {
   input_height: number;
 }
 
+interface ModelConfig {
+  name: string;
+  file_path: string;
+  input_width: number;
+  input_height: number;
+  overlap: number;
+  border: number;
+}
+
 const availableModels = ref<{ label: string, value: string }[]>([]);
 const selectedModel = ref<string>("");
 const scaleFactor = ref<number>(2);
+
+// 自定义切块参数
+const useCustomTiling = ref(false);
+const customOverlap = ref(32);
+const customBorder = ref(64);
+const modelDefaultOverlap = ref(32);
+const modelDefaultBorder = ref(64);
 
 onMounted(async () => {
   const models = await getAvailableModels();
@@ -30,6 +46,25 @@ onMounted(async () => {
   if (models.length > 0) {
     const defaultModel = await getDefaultModel();
     selectedModel.value = defaultModel || models[0];
+  }
+});
+
+// 当模型改变时，更新默认参数
+watch(selectedModel, async (newModel) => {
+  if (newModel) {
+    try {
+      const config = await invoke<ModelConfig>("get_model_config", { modelName: newModel });
+      modelDefaultOverlap.value = config.overlap;
+      modelDefaultBorder.value = config.border;
+      
+      // 如果没有开启自定义，则同步更新显示的值
+      if (!useCustomTiling.value) {
+        customOverlap.value = config.overlap;
+        customBorder.value = config.border;
+      }
+    } catch (err) {
+      console.error("Failed to fetch model config:", err);
+    }
   }
 });
 
@@ -54,7 +89,9 @@ async function startNewTask() {
       const id = await invoke<number>("run_super_resolution", {
         inputPath: inputPath,
         modelName: modelName,
-        scaleFactor: scale
+        scaleFactor: scale,
+        overlap: useCustomTiling.value ? customOverlap.value : null,
+        border: useCustomTiling.value ? customBorder.value : null
       });
       
       const metadata = await invoke<TaskMetaStruct>("get_task_metadata", { taskId: id });
@@ -116,6 +153,37 @@ async function startNewTask() {
               style="width: 100%"
             />
           </n-form-item> -->
+
+          <n-form-item label="高级参数">
+            <n-space align="center">
+              <n-switch v-model:value="useCustomTiling" />
+              <n-text depth="3">自定义切块 (Padding & Border)</n-text>
+            </n-space>
+          </n-form-item>
+
+          <transition name="fade">
+            <div v-if="useCustomTiling" style="background: rgba(0,0,0,0.02); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+              <n-space vertical>
+                <n-form-item label="Overlap (Padding)" label-placement="left" :show-feedback="false">
+                  <n-input-number v-model:value="customOverlap" :min="0" :max="128" style="width: 100%">
+                    <template #suffix>px</template>
+                  </n-input-number>
+                </n-form-item>
+                <n-text depth="3" style="font-size: 12px; margin-bottom: 10px;">
+                  模型默认值: {{ modelDefaultOverlap }}px. 增加重叠可以减少拼接处的接缝感。
+                </n-text>
+                
+                <n-form-item label="Border (Extra)" label-placement="left" :show-feedback="false">
+                  <n-input-number v-model:value="customBorder" :min="0" :max="256" style="width: 100%">
+                    <template #suffix>px</template>
+                  </n-input-number>
+                </n-form-item>
+                <n-text depth="3" style="font-size: 12px;">
+                  模型默认值: {{ modelDefaultBorder }}px. 必须大于等于 Overlap。
+                </n-text>
+              </n-space>
+            </div>
+          </transition>
         </n-form>
 
         <n-button 
@@ -136,5 +204,13 @@ async function startNewTask() {
 <style scoped>
 .createTaskPage {
   width: 100%;
+}
+
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.3s, transform 0.3s;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
 }
 </style>

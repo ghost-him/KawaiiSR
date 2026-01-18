@@ -33,11 +33,15 @@ async fn run_super_resolution(
     input_path: String,
     model_name: String,
     scale_factor: u32,
+    overlap: Option<usize>,
+    border: Option<usize>,
 ) -> Result<usize, String> {
     tracing::info!(
-        "Command 'run_super_resolution' invoked for {}, model: {}",
+        "Command 'run_super_resolution' invoked for {}, model: {}, overlap: {:?}, border: {:?}",
         input_path,
-        model_name
+        model_name,
+        overlap,
+        border
     );
 
     let manager = state.sr_pipline.clone();
@@ -46,6 +50,8 @@ async fn run_super_resolution(
         input_path,
         model_name,
         scale_factor,
+        overlap,
+        border,
         output_path: None,
     };
 
@@ -107,9 +113,11 @@ async fn get_result_image(
         }
 
         let img_dynamic = if channels == 4 {
-            image::RgbaImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgba8)
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+                .map(image::DynamicImage::ImageRgba8)
         } else {
-            image::RgbImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgb8)
+            image::RgbImage::from_raw(width as u32, height as u32, pixels)
+                .map(image::DynamicImage::ImageRgb8)
         };
 
         if let Some(img) = img_dynamic {
@@ -151,9 +159,11 @@ async fn save_result_image(
         }
 
         let img_dynamic = if channels == 4 {
-            image::RgbaImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgba8)
+            image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+                .map(image::DynamicImage::ImageRgba8)
         } else {
-            image::RgbImage::from_raw(width as u32, height as u32, pixels).map(image::DynamicImage::ImageRgb8)
+            image::RgbImage::from_raw(width as u32, height as u32, pixels)
+                .map(image::DynamicImage::ImageRgb8)
         };
 
         if let Some(img) = img_dynamic {
@@ -181,11 +191,22 @@ async fn get_available_models(
 
 /// 获取默认模型名称
 #[tauri::command]
-async fn get_default_model(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<String, String> {
+async fn get_default_model(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
     let manager = state.sr_pipline.clone();
     Ok(manager.get_default_model().await)
+}
+
+/// 获取特定模型的配置
+#[tauri::command]
+async fn get_model_config(
+    state: tauri::State<'_, Arc<AppState>>,
+    model_name: String,
+) -> Result<crate::config::model_config::ModelConfig, String> {
+    let manager = state.sr_pipline.clone();
+    manager
+        .get_model_config(model_name.clone())
+        .await
+        .ok_or_else(|| format!("Model config for {} not found", model_name))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -209,6 +230,7 @@ pub fn run() {
             get_task_metadata,
             get_available_models,
             get_default_model,
+            get_model_config,
         ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {

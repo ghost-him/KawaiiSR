@@ -27,6 +27,10 @@ pub struct SRInfo {
     pub model_name: String,
     // 放大的倍数
     pub scale_factor: u32,
+    // 重叠大小（可选）
+    pub overlap: Option<usize>,
+    // 边界填充大小（可选）
+    pub border: Option<usize>,
     // 保存路径（如果为空，则表示保存到内存中，等待获取）
     pub output_path: Option<String>,
 }
@@ -108,6 +112,19 @@ impl SRManager {
     pub async fn get_default_model(&self) -> String {
         let inner = self.inner.lock().await;
         inner.config_manager.default_model_name().to_string()
+    }
+
+    // 获取特定模型的配置
+    pub async fn get_model_config(
+        &self,
+        model_name: String,
+    ) -> Option<crate::config::model_config::ModelConfig> {
+        let inner = self.inner.lock().await;
+        inner
+            .config_manager
+            .get_model(&model_name)
+            .ok()
+            .map(|arc| (*arc).clone())
     }
 }
 
@@ -253,20 +270,24 @@ impl SRManagerInner {
         // 获取模型配置
         let model_config = self.config_manager.get_model(&sr_info.model_name)?;
 
+        // 使用用户提供的参数或默认参数
+        let overlap = sr_info.overlap.unwrap_or(model_config.overlap);
+        let border = sr_info.border.unwrap_or(model_config.border);
+
         // 1. 仅获取图片尺寸，不加载完整图片数据
         let (width, height) = image::image_dimensions(&sr_info.input_path)?;
         let input_size = std::fs::metadata(&sr_info.input_path)?.len();
 
         let current_task_id = self.id_generator.generate_id();
 
-        // 计算并存储元数据：使用配置中的 BORDER 和 OVERLAP
+        // 计算并存储元数据：使用配置或用户覆盖的 BORDER 和 OVERLAP
         let info = crate::pipeline::tiling_utils::TilingInfo::new_with_config(
             height as usize,
             width as usize,
             model_config.input_height,
             model_config.input_width,
-            model_config.border,
-            model_config.overlap,
+            border,
+            overlap,
         );
         self.task_metadata.insert(
             current_task_id,
@@ -286,8 +307,8 @@ impl SRManagerInner {
             model_name: sr_info.model_name.clone(),
             tile_width: model_config.input_width,
             tile_height: model_config.input_height,
-            border: model_config.border,
-            overlap: model_config.overlap,
+            border,
+            overlap,
         };
         self.preprocessor_tx
             .send(preproc_info)
