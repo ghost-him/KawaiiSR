@@ -96,7 +96,7 @@ def build_model(model_config, input_size, device):
 
 
 def export_onnx(config_path, checkpoint_path, input_size, output_path):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device( 'cpu')
     print(f"Using device: {device}")
 
     model_config = load_config(config_path)

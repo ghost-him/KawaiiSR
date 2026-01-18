@@ -114,66 +114,87 @@ class WaveletTransform2D(nn.Module):
 # ==============================================================================
 # 新增的可视化函数
 # ==============================================================================
-def visualize_wavelet_transform(image_path):
+def visualize_wavelet_list(image_path, wavelet_list):
     """
-    加载本地图像，执行2D小波变换，并可视化四个分量。
+    对列表中的每一个小波进行测试并保存结果
     """
-    # --- 1. 加载和预处理图像 ---
     try:
         img = Image.open(image_path)
-    except FileNotFoundError:
-        print(f"错误: 找不到文件 '{image_path}'")
-        return
     except Exception as e:
-        print(f"加载或处理图片时出错: {e}")
+        print(f"无法加载图片: {e}")
         return
 
-    # 定义图像预处理流程
-    # 转换为灰度图 -> 转换为Tensor (像素值缩放到[0,1]) -> 增加批次维度
+    # 预处理
     preprocess = T.Compose([
         T.Grayscale(num_output_channels=1),
         T.ToTensor(),
-        T.Lambda(lambda x: x.unsqueeze(0)) # 增加一个批次维度, 形状变为 [1, 1, H, W]
+        T.Lambda(lambda x: x.unsqueeze(0))
     ])
-    
     img_tensor = preprocess(img)
-    print(f"输入图像张量形状: {img_tensor.shape}")
 
-    # --- 2. 执行小波变换 ---
-    DWT = WaveletTransform2D(wavelet="haar")
-    # 禁止梯度计算，因为我们只做前向传播
-    with torch.no_grad():
-        LL, LH, HL, HH = DWT(img_tensor)
+    # 循环测试每一个小波
+    for w_name in wavelet_list:
+        print(f"正在测试小波: {w_name} ...")
+        
+        try:
+            # --- 核心修改在这里 ---
+            DWT = WaveletTransform2D(wavelet=w_name) 
+            
+            with torch.no_grad():
+                LL, LH, HL, HH = DWT(img_tensor)
 
-    # --- 3. 准备数据用于绘图 ---
-    components = {
-        "Approximation (LL)": LL.squeeze().detach().cpu().numpy(),
-        "Horizontal Detail (LH)": LH.squeeze().detach().cpu().numpy(),
-        "Vertical Detail (HL)": HL.squeeze().detach().cpu().numpy(),
-        "Diagonal Detail (HH)": HH.squeeze().detach().cpu().numpy()
-    }
+            # 准备绘图
+            components = {
+                "LL (Approx)": LL.squeeze().cpu().numpy(),
+                "LH (Horizontal)": LH.squeeze().cpu().numpy(),
+                "HL (Vertical)": HL.squeeze().cpu().numpy(),
+                "HH (Diagonal)": HH.squeeze().cpu().numpy()
+            }
 
-    # --- 4. 可视化 ---
-    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
-    fig.suptitle("2D Wavelet Transform Components ('sym4' wavelet)", fontsize=16)
+            # 绘图
+            fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+            fig.suptitle(f"Wavelet: {w_name}", fontsize=20, weight='bold')
 
-    (axes[0, 0].imshow(components["Approximation (LL)"], cmap='gray'), axes[0, 0].set_title("Approximation (LL)"))
-    (axes[0, 1].imshow(components["Horizontal Detail (LH)"], cmap='gray'), axes[0, 1].set_title("Horizontal Detail (LH)"))
-    (axes[1, 0].imshow(components["Vertical Detail (HL)"], cmap='gray'), axes[1, 0].set_title("Vertical Detail (HL)"))
-    (axes[1, 1].imshow(components["Diagonal Detail (HH)"], cmap='gray'), axes[1, 1].set_title("Diagonal Detail (HH)"))
+            # 统一使用 gray colormap
+            axes[0, 0].imshow(components["LL (Approx)"], cmap='gray')
+            axes[0, 0].set_title("LL (Approx)")
+            
+            axes[0, 1].imshow(components["LH (Horizontal)"], cmap='gray')
+            axes[0, 1].set_title("LH (Horizontal)")
+            
+            axes[1, 0].imshow(components["HL (Vertical)"], cmap='gray')
+            axes[1, 0].set_title("HL (Vertical)")
+            
+            axes[1, 1].imshow(components["HH (Diagonal)"], cmap='gray')
+            axes[1, 1].set_title("HH (Diagonal)")
 
-    for ax in axes.ravel():
-        ax.axis('off')
+            for ax in axes.ravel():
+                ax.axis('off')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
-    plt.savefig('my_plot.png')
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            
+            # 保存文件，文件名带上小波的名字
+            save_name = f"result_{w_name}.png"
+            plt.savefig(save_name)
+            plt.close(fig) # 关闭画布以释放内存
+            print(f"已保存: {save_name}")
+            
+        except Exception as e:
+            print(f"小波 {w_name} 处理失败: {e}")
 
 
 if __name__ == "__main__":
-    LOCAL_IMAGE_PATH = "/home/user/gz/gz/KawaiiSR/models/test.png" 
+    LOCAL_IMAGE_PATH = "./test2.jpg" 
     
-    print("运行小波变换可视化...")
-    print("需要的库: torch, pywavelets, matplotlib, pillow, torchvision")
+    # 这里定义你要测试的列表
+    # 包含了之前分析的：Haar(基准), Bior系列(推荐), Db2(折中), Coif1
+    WAVELETS_TO_TEST = [
+        "haar",      # 基准：最清晰，但方块效应重
+        "db2",       # 比haar稍平滑，比sym4锐利
+        "bior1.3",   # 强烈推荐：动漫线条利器
+        "bior4.4",   # 均衡型：压缩标准常用
+        "rbio1.3",   # 反双正交：特定边缘提取
+        "coif1"      # 细节保留较好
+    ]
     
-    visualize_wavelet_transform(LOCAL_IMAGE_PATH)
+    visualize_wavelet_list(LOCAL_IMAGE_PATH, WAVELETS_TO_TEST)

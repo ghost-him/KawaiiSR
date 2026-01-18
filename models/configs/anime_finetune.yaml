@@ -1,7 +1,7 @@
 train:
   device: cuda
-  epochs: 50
-  batch_size: 2
+  epochs: 500
+  batch_size: 3
   learning_rate: 5.0e-5
   mixed_precision: false
   gradient_clip_norm: 1.0
@@ -16,7 +16,7 @@ train:
   val_data_path: /DATA/anime/test    # TODO: 请修改为您实际的验证集路径
   val_every: 1
   log_every: 100
-  early_stopping_patience: 15
+  early_stopping_patience: 50
   checkpoint_dir: ./models/checkpoints/anime_finetune
   auto_resume: false
   torch_compile: false
@@ -24,9 +24,9 @@ train:
 loss_global_scale: 1.0
 
 loss_weights:
-  pixel: 1.0
+  pixel: 1.2
   frequency: 0.2
-  perceptual: 1.0
+  perceptual: 0.05
   vgg: 0.0
   adversarial: 0.05  # 微调时开启轻微对抗
 
