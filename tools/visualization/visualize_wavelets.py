@@ -22,8 +22,8 @@ class WaveletTransform2D(nn.Module):
     loss = nn.MSELoss()
     # Use an even-sized input for perfect reconstruction example
     data = torch.rand(1, 3, 128, 256) 
-    DWT = WaveletTransform2D(wavelet="sym4")
-    IDWT = WaveletTransform2D(wavelet="sym4", inverse=True)
+    DWT = WaveletTransform2D(wavelet="bior1.3")
+    IDWT = WaveletTransform2D(wavelet="bior1.3", inverse=True)
 
     LL, LH, HL, HH = DWT(data) # (B, C, H / 2, W / 2) * 4
     recdata = IDWT([LL, LH, HL, HH], original_size=data.shape)

@@ -190,8 +190,8 @@ class ResidualBlock(nn.Module):
         self.last_conv = BigConv(in_channels=out_channels * (num_layers + 1), out_channels=out_channels)
         self.cab = CAB(num_feat=out_channels, squeeze_factor=max(out_channels // 8, 1))
 
-        self.dwt = WaveletTransform2D(wavelet="sym4", channels=out_channels)
-        self.idwt = WaveletTransform2D(wavelet="sym4", inverse=True, channels=out_channels)
+        self.dwt = WaveletTransform2D(wavelet="bior1.3", channels=out_channels)
+        self.idwt = WaveletTransform2D(wavelet="bior1.3", inverse=True, channels=out_channels)
 
         self.lf_branch = nn.Sequential(
             BigConv(in_channels=out_channels, out_channels=out_channels),

@@ -97,7 +97,7 @@ class LaplacianLoss(nn.Module):
     def __init__(self, device: str = 'cuda'):
         super(LaplacianLoss, self).__init__()
         self.loss = nn.L1Loss()
-        self.dwt = WaveletTransform2D(wavelet="sym4", mode="reflect")
+        self.dwt = WaveletTransform2D(wavelet="bior1.3", mode="reflect")
 
     def forward(self, sr_img: torch.Tensor, hr_img: torch.Tensor) -> torch.Tensor:
         """
