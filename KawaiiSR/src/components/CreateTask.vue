@@ -86,6 +86,60 @@ async function pickAutoSaveDir() {
   }
 }
 
+async function createSingleTask(inputPath: string, setActive: boolean = true) {
+  const filename = inputPath.split(/[\\/]/).pop() || "image.png";
+  const scale = scaleFactor.value;
+  const modelName = selectedModel.value;
+
+  let outputPath = null;
+  if (autoSaveDir.value) {
+    const sep = (autoSaveDir.value.includes("\\") || inputPath.includes("\\")) ? "\\" : "/";
+    outputPath = `${autoSaveDir.value}${sep}${filename}`;
+    // Force PNG
+    if (!outputPath.toLowerCase().endsWith(".png")) {
+      outputPath = outputPath.replace(/\.[^/.]+$/, "") + ".png";
+    }
+  }
+  
+  try {
+    const id = await invoke<number>("run_super_resolution", {
+      inputPath: inputPath,
+      modelName: modelName,
+      outputPath: outputPath,
+      overlap: useCustomTiling.value ? customOverlap.value : null,
+      border: useCustomTiling.value ? customBorder.value : null
+    });
+    
+    const metadata = await invoke<TaskMetaStruct>("get_task_metadata", { taskId: id });
+    
+    const newTask: Task = {
+      id,
+      inputPath,
+      filename,
+      scaleFactor: scale,
+      modelName: modelName,
+      status: 'processing',
+      progress: 0, 
+      completedTiles: 0,
+      totalTiles: metadata.total_tiles,
+      inputSize: metadata.input_size,
+      inputWidth: metadata.input_width,
+      inputHeight: metadata.input_height,
+      startTime: Date.now()
+    };
+    
+    addTask(newTask, setActive);
+    if (setActive) {
+      selectTask(id);
+    }
+    emit('taskCreated', id);
+    
+  } catch (err) {
+    console.error("Failed to start task for " + inputPath + ":", err);
+    message.error(`无法启动任务 (${filename}): ${err}`);
+  }
+}
+
 async function startNewTask() {
   if (!selectedModel.value) {
     message.warning("请先选择一个模型");
@@ -93,60 +147,58 @@ async function startNewTask() {
   }
 
   const selected = await open({
-    multiple: false,
+    multiple: true,
     filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }]
   });
   
-  if (selected && !Array.isArray(selected)) {
-    const inputPath = selected;
-    const filename = inputPath.split(/[\\/]/).pop() || "image.png";
-    const scale = scaleFactor.value;
-    const modelName = selectedModel.value;
-
-    let outputPath = null;
-    if (autoSaveDir.value) {
-      const sep = autoSaveDir.value.includes("\\") || inputPath.includes("\\") ? "\\" : "/";
-      outputPath = `${autoSaveDir.value}${sep}${filename}`;
-      // Force PNG
-      if (!outputPath.toLowerCase().endsWith(".png")) {
-        outputPath = outputPath.replace(/\.[^/.]+$/, "") + ".png";
-      }
+  if (selected && Array.isArray(selected)) {
+    // 循环处理选中的多张图片
+    for (let i = 0; i < selected.length; i++) {
+      // 第一张设置为活跃任务，后续的不自动跳转
+      await createSingleTask(selected[i], i === 0);
     }
-    
+    if (selected.length > 0) {
+      message.success(`成功启动 ${selected.length} 个任务`);
+    }
+  } else if (selected) {
+    // 兼容某些情况下的单选返回
+    await createSingleTask(selected as string, true);
+  }
+}
+
+async function startBatchFolderTask() {
+  if (!selectedModel.value) {
+    message.warning("请先选择一个模型");
+    return;
+  }
+
+  if (!autoSaveDir.value) {
+    message.warning("建议先选择“自动保存”目录，否则处理完成后的图片将仅保存在内存中，需要手动一张张保存。");
+  }
+
+  const folder = await open({
+    directory: true,
+    multiple: false,
+  });
+
+  if (folder && typeof folder === 'string') {
     try {
-      const id = await invoke<number>("run_super_resolution", {
-        inputPath: inputPath,
-        modelName: modelName,
-        outputPath: outputPath,
-        overlap: useCustomTiling.value ? customOverlap.value : null,
-        border: useCustomTiling.value ? customBorder.value : null
-      });
+      const images = await invoke<string[]>("list_images_in_folder", { path: folder });
+      if (images.length === 0) {
+        message.info("该文件夹中没有找到匹配的图片格式 (png, jpg, jpeg, webp)");
+        return;
+      }
+
+      message.loading(`正在为 ${images.length} 张图片创建任务...`);
       
-      const metadata = await invoke<TaskMetaStruct>("get_task_metadata", { taskId: id });
+      for (let i = 0; i < images.length; i++) {
+        await createSingleTask(images[i], i === 0);
+      }
       
-      const newTask: Task = {
-        id,
-        inputPath,
-        filename,
-        scaleFactor: scale,
-        modelName: modelName,
-        status: 'processing',
-        progress: 0, 
-        completedTiles: 0,
-        totalTiles: metadata.total_tiles,
-        inputSize: metadata.input_size,
-        inputWidth: metadata.input_width,
-        inputHeight: metadata.input_height,
-        startTime: Date.now()
-      };
-      
-      addTask(newTask);
-      selectTask(id);
-      emit('taskCreated', id);
-      
+      message.success(`成功从文件夹中启动 ${images.length} 个任务`);
     } catch (err) {
-      console.error("Failed to start task:", err);
-      message.error("无法启动任务: " + err);
+      console.error("Failed to list folder:", err);
+      message.error("无法读取文件夹内容: " + err);
     }
   }
 }
@@ -236,16 +288,30 @@ async function startNewTask() {
           </transition>
         </n-form>
 
-        <n-button 
-          type="primary" 
-          size="large" 
-          @click="startNewTask" 
-          block 
-          style="height: 50px; font-weight: bold; margin-top: 20px;"
-          :disabled="!selectedModel"
-        >
-          选择图片并开始处理
-        </n-button>
+        <n-space vertical size="medium" style="margin-top: 20px;">
+          <n-button 
+            type="primary" 
+            size="large" 
+            @click="startNewTask" 
+            block 
+            style="height: 50px; font-weight: bold;"
+            :disabled="!selectedModel"
+          >
+            选择图片并开始处理
+          </n-button>
+          
+          <n-button 
+            type="info" 
+            size="large" 
+            ghost
+            @click="startBatchFolderTask" 
+            block 
+            style="height: 50px; font-weight: bold;"
+            :disabled="!selectedModel"
+          >
+            处理整个文件夹
+          </n-button>
+        </n-space>
       </n-space>
     </n-card>
   </div>

@@ -10,9 +10,11 @@ export function useTasks() {
         tasks.value.find(t => t.id === activeTaskId.value) || null
     );
 
-    function addTask(task: Task) {
+    function addTask(task: Task, setActive: boolean = true) {
         tasks.value.unshift(task);
-        activeTaskId.value = task.id;
+        if (setActive) {
+            activeTaskId.value = task.id;
+        }
         if (task.inputPath) {
             fetchOriginalImage(task.id, task.inputPath);
         }

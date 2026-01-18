@@ -188,6 +188,28 @@ async fn get_auto_save_dir(
     Ok(None)
 }
 
+#[tauri::command]
+async fn list_images_in_folder(path: String) -> Result<Vec<String>, String> {
+    let mut images = Vec::new();
+    let dir = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+
+    for entry in dir {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                let ext = ext.to_string_lossy().to_lowercase();
+                if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" {
+                    images.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    // Sort images for consistent processing order
+    images.sort();
+    Ok(images)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -212,6 +234,7 @@ pub fn run() {
             get_model_config,
             set_auto_save_dir,
             get_auto_save_dir,
+            list_images_in_folder,
         ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {
