@@ -1,12 +1,52 @@
+use crate::config::ConfigManager;
+use crate::pipeline::task_meta::{ImageType, TaskType};
 use crate::sr_manager::ImageInfo;
-use crate::pipeline::task_meta::{TaskType, ImageType};
 use crossbeam_channel::Receiver;
 use dashmap::{DashMap, DashSet};
-use ndarray::{Axis, stack};
+use ndarray::{stack, Axis};
+use std::path::Path;
 use std::sync::Arc;
 use tauri::async_runtime::Mutex;
 use tauri::AppHandle;
 use tauri::Emitter;
+
+pub fn save_image_to_file(info: &ImageInfo, output_path: &Path) -> Result<(), String> {
+    let data = &info.image_data;
+    let shape = data.shape();
+    let channels = shape[1];
+    let height = shape[2];
+    let width = shape[3];
+
+    let mut pixels = Vec::with_capacity(height * width * channels);
+    for y in 0..height {
+        for x in 0..width {
+            for c in 0..channels {
+                // 数据已经预先反归一化到 [0, 255]
+                pixels.push(data[[0, c, y, x]] as u8);
+            }
+        }
+    }
+
+    let img_dynamic = if channels == 4 {
+        image::RgbaImage::from_raw(width as u32, height as u32, pixels)
+            .map(image::DynamicImage::ImageRgba8)
+    } else {
+        image::RgbImage::from_raw(width as u32, height as u32, pixels)
+            .map(image::DynamicImage::ImageRgb8)
+    };
+
+    if let Some(img) = img_dynamic {
+        // 确保目录存在
+        if let Some(parent) = output_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return Err(format!("Failed to create directory: {}", e));
+            }
+        }
+        img.save(output_path).map_err(|e| e.to_string())
+    } else {
+        Err("Failed to create image from raw pixels".to_string())
+    }
+}
 
 pub struct ResultCollector {
     _handle: std::thread::JoinHandle<()>,
@@ -24,6 +64,7 @@ impl ResultCollector {
         results: Arc<DashMap<usize, ImageInfo>>,
         cancelled_tasks: Arc<DashSet<usize>>,
         app_handle: Option<AppHandle>,
+        config_manager: Arc<ConfigManager>,
     ) -> Self {
         let app_handle_store = Arc::new(Mutex::new(app_handle));
         let app_handle_store_inner = app_handle_store.clone();
@@ -34,6 +75,7 @@ impl ResultCollector {
             partial_results: std::collections::HashMap::new(),
             cancelled_tasks,
             app_handle: app_handle_store_inner,
+            config_manager,
         };
 
         let handle = std::thread::spawn(move || {
@@ -58,6 +100,7 @@ struct ResultCollectorInner {
     partial_results: std::collections::HashMap<usize, PartialTask>,
     cancelled_tasks: Arc<DashSet<usize>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
+    config_manager: Arc<ConfigManager>,
 }
 
 impl ResultCollectorInner {
@@ -138,16 +181,48 @@ impl ResultCollectorInner {
                 TaskType::Video(frame_idx) => {
                     // 视频帧处理逻辑可以在这里扩展
                     // 目前直接存入
-                    tracing::info!("[ResultCollector] Received frame {} for task {}", frame_idx, task_id);
+                    tracing::info!(
+                        "[ResultCollector] Received frame {} for task {}",
+                        frame_idx,
+                        task_id
+                    );
                     Some(image_info)
                 }
             };
 
-            if let Some(final_info) = final_result {
-                // 1. 保存到内部存储
-                self.results.insert(task_id, final_info);
+            if let Some(mut final_info) = final_result {
+                // 获取模型配置以执行反归一化
+                if let Ok(model_config) = self
+                    .config_manager
+                    .get_model(&final_info.image_meta.model_name)
+                {
+                    tracing::info!(
+                        "[ResultCollector] Applying denormalization for task {}",
+                        task_id
+                    );
+                    // 在存储前直接对数据进行反归一化处理
+                    final_info
+                        .image_data
+                        .mapv_inplace(|v| model_config.denormalize(v));
+                }
 
-                // 2. 交互外部模块: 通知前端任务完成
+                // 1. 保存到内部存储 (现在存储的是 [0, 255] 范围的数据)
+                self.results.insert(task_id, final_info.clone());
+
+                // 2. 自动保存逻辑 (如果设置了 output_path)
+                if let Some(output_path) = &final_info.image_meta.output_path {
+                    tracing::info!(
+                        "[ResultCollector] Auto-saving task {} to {}",
+                        task_id,
+                        output_path
+                    );
+
+                    if let Err(e) = save_image_to_file(&final_info, Path::new(output_path)) {
+                        tracing::error!("[ResultCollector] Auto-save failed: {}", e);
+                    }
+                }
+
+                // 3. 交互外部模块: 通知前端任务完成
                 let app_handle_clone = self.app_handle.clone();
                 tauri::async_runtime::block_on(async move {
                     let handle_lock = app_handle_clone.lock().await;

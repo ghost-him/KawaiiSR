@@ -2,6 +2,10 @@
 
 /// 表示一个图片的元数据
 pub struct ImageMeta {
+    // 图片原始路径
+    pub input_path: String,
+    // 保存图片的路径（可选，如果设置则自动在完成时保存）
+    pub output_path: Option<String>,
     // 图片原始宽度
     pub original_width: usize,
     // 图片原始高度

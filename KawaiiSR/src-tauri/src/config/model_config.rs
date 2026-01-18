@@ -108,6 +108,40 @@ impl ModelConfig {
         }
         Ok(())
     }
+
+    /// 应用归一化到像素数据
+    pub fn apply_normalization(&self, pixel_value: f32) -> f32 {
+        let normalized = match self.normalization.range {
+            NormalizationRange::ZeroToOne => pixel_value / 255.0,
+            NormalizationRange::MinusOneToOne => (pixel_value / 255.0) * 2.0 - 1.0,
+            NormalizationRange::ZeroTo255 => pixel_value,
+        };
+
+        if let (Some(mean), Some(std)) = (&self.normalization.mean, &self.normalization.std) {
+            // 应用均值和标准差归一化
+            (normalized - mean[0]) / std[0] // 假设全部通道相同
+        } else {
+            normalized
+        }
+    }
+
+    /// 执行反归一化，将模型输出转换回 [0, 255] 范围
+    pub fn denormalize(&self, normalized_value: f32) -> f32 {
+        let de_norm =
+            if let (Some(mean), Some(std)) = (&self.normalization.mean, &self.normalization.std) {
+                // 逆应用均值和标准差
+                normalized_value * std[0] + mean[0]
+            } else {
+                normalized_value
+            };
+
+        let result = match self.normalization.range {
+            NormalizationRange::ZeroToOne => de_norm * 255.0,
+            NormalizationRange::MinusOneToOne => (de_norm + 1.0) / 2.0 * 255.0,
+            NormalizationRange::ZeroTo255 => de_norm,
+        };
+        result.clamp(0.0, 255.0)
+    }
 }
 
 #[cfg(test)]

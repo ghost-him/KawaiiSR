@@ -1,6 +1,6 @@
 use crate::config::ConfigManager;
 use crate::id_generator::IDGenerator;
-use crate::pipeline::result_collector::ResultCollector;
+use crate::pipeline::result_collector::{self, ResultCollector};
 use crate::pipeline::task_meta::{ImageMeta, TaskType};
 use crate::pipeline::{
     image_preprocessor::{ImagePreprocessor, PreprocessorInfo},
@@ -14,6 +14,7 @@ use anyhow::Result;
 use crossbeam_channel::{bounded, unbounded, Sender};
 use dashmap::{DashMap, DashSet};
 use ndarray::Array4;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::{async_runtime::Mutex, AppHandle};
 
@@ -98,6 +99,12 @@ impl SRManager {
         let inner = self.inner.lock().await;
         inner.cancelled_tasks.insert(task_id);
         tracing::info!("[SRManager] Task {} marked as cancelled", task_id);
+    }
+
+    pub async fn save_image(&self, task_id: usize, output_path: String) -> Result<(), String> {
+        let inner = self.inner.lock().await;
+        // 先克隆需要的引用，因为 DashMap 持有的 Entry 锁会导致生命周期问题
+        inner.save_image(task_id, output_path)
     }
 
     // 获取可用模型列表
@@ -224,6 +231,7 @@ impl Default for SRManagerInner {
             results.clone(),
             cancelled_tasks.clone(),
             None,
+            config_manager.clone(),
         );
 
         Self {
@@ -302,6 +310,7 @@ impl SRManagerInner {
         let preproc_info = PreprocessorInfo {
             task_id: current_task_id,
             input_path: sr_info.input_path.clone(),
+            output_path: sr_info.output_path.clone(),
             scale_factor: model_config.scale,
             model_name: sr_info.model_name.clone(),
             tile_width: model_config.input_width,
@@ -326,5 +335,17 @@ impl SRManagerInner {
     // 删除图片的数据
     pub async fn remove_result(&self, task_id: usize) {
         self.results.remove(&task_id);
+    }
+
+    // 保存图片
+    pub fn save_image(&self, task_id: usize, output_path: String) -> Result<(), String> {
+        let info = self
+            .results
+            .get(&task_id)
+            .ok_or_else(|| format!("No result found for task {}", task_id))?
+            .value()
+            .clone();
+
+        result_collector::save_image_to_file(&info, Path::new(&output_path))
     }
 }

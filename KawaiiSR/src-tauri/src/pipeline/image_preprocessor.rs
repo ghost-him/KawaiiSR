@@ -1,4 +1,3 @@
-use crate::config::model_config::NormalizationRange;
 use crate::config::ConfigManager;
 use crate::pipeline::image_tiler::TilerInfo;
 use crate::pipeline::task_meta::TaskType;
@@ -12,6 +11,7 @@ use std::sync::Arc;
 pub struct PreprocessorInfo {
     pub task_id: usize,
     pub input_path: String,
+    pub output_path: Option<String>,
     pub scale_factor: u32,
     pub model_name: String,
     pub tile_width: usize,
@@ -118,11 +118,11 @@ impl ImagePreprocessorInner {
                         // 重复3次，得到一个3通道的，由输入图片alpha组成的图片
                         for c in 0..3 {
                             // 完成rgb的提取
-                            rgb_data[[c, y as usize, x as usize]] = self
-                                .apply_normalization(pixel[c] as f32, &model_config.normalization);
+                            rgb_data[[c, y as usize, x as usize]] =
+                                model_config.apply_normalization(pixel[c] as f32);
                             // 完成alpha的提取
-                            alpha_data[[c, y as usize, x as usize]] = self
-                                .apply_normalization(pixel[3] as f32, &model_config.normalization);
+                            alpha_data[[c, y as usize, x as usize]] =
+                                model_config.apply_normalization(pixel[3] as f32);
                         }
                     }
 
@@ -132,6 +132,8 @@ impl ImagePreprocessorInner {
                     );
 
                     let image_meta = Arc::new(ImageMeta {
+                        input_path: info.input_path.clone(),
+                        output_path: info.output_path.clone(),
                         original_width: width as usize,
                         original_height: height as usize,
                         scale_factor: model_config.scale,
@@ -166,14 +168,16 @@ impl ImagePreprocessorInner {
                     let mut rgb_data = Array3::<f32>::zeros((3, height as usize, width as usize));
                     for (x, y, pixel) in rgb_img.enumerate_pixels() {
                         for c in 0..3 {
-                            rgb_data[[c, y as usize, x as usize]] = self
-                                .apply_normalization(pixel[c] as f32, &model_config.normalization);
+                            rgb_data[[c, y as usize, x as usize]] =
+                                model_config.apply_normalization(pixel[c] as f32);
                         }
                     }
 
                     tracing::info!("[ImagePreprocessor] Task {} is RGB image", info.task_id);
 
                     let image_meta = Arc::new(ImageMeta {
+                        input_path: info.input_path.clone(),
+                        output_path: info.output_path.clone(),
                         original_width: width as usize,
                         original_height: height as usize,
                         scale_factor: model_config.scale,
@@ -195,25 +199,5 @@ impl ImagePreprocessorInner {
         }
 
         Ok(outputs)
-    }
-
-    /// 应用归一化到像素数据
-    fn apply_normalization(
-        &self,
-        pixel_value: f32,
-        normalization: &crate::config::model_config::NormalizationConfig,
-    ) -> f32 {
-        let normalized = match normalization.range {
-            NormalizationRange::ZeroToOne => pixel_value / 255.0,
-            NormalizationRange::MinusOneToOne => (pixel_value / 255.0) * 2.0 - 1.0,
-            NormalizationRange::ZeroTo255 => pixel_value,
-        };
-
-        if let (Some(mean), Some(std)) = (&normalization.mean, &normalization.std) {
-            // 应用均值和标准差归一化
-            (normalized - mean[0]) / std[0] // 假设RGB通道相同
-        } else {
-            normalized
-        }
     }
 }

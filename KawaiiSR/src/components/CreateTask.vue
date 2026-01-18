@@ -3,7 +3,8 @@ import { ref, onMounted, watch } from 'vue';
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { 
-  NButton, NCard, NSpace, NText, useMessage, NSelect, NInputNumber, NForm, NFormItem, NSwitch
+  NButton, NCard, NSpace, NText, useMessage, NSelect, NInputNumber, NForm, NFormItem, NSwitch,
+  NInput, NInputGroup
 } from "naive-ui";
 import { useTasks } from "../composables/useTasks";
 import type { Task } from "../types";
@@ -73,6 +74,18 @@ watch(selectedModel, async (newModel) => {
   }
 });
 
+const autoSaveDir = ref<string | null>(null);
+
+async function pickAutoSaveDir() {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+  });
+  if (selected && !Array.isArray(selected)) {
+    autoSaveDir.value = selected;
+  }
+}
+
 async function startNewTask() {
   if (!selectedModel.value) {
     message.warning("请先选择一个模型");
@@ -89,11 +102,22 @@ async function startNewTask() {
     const filename = inputPath.split(/[\\/]/).pop() || "image.png";
     const scale = scaleFactor.value;
     const modelName = selectedModel.value;
+
+    let outputPath = null;
+    if (autoSaveDir.value) {
+      const sep = autoSaveDir.value.includes("\\") || inputPath.includes("\\") ? "\\" : "/";
+      outputPath = `${autoSaveDir.value}${sep}${filename}`;
+      // Force PNG
+      if (!outputPath.toLowerCase().endsWith(".png")) {
+        outputPath = outputPath.replace(/\.[^/.]+$/, "") + ".png";
+      }
+    }
     
     try {
       const id = await invoke<number>("run_super_resolution", {
         inputPath: inputPath,
         modelName: modelName,
+        outputPath: outputPath,
         overlap: useCustomTiling.value ? customOverlap.value : null,
         border: useCustomTiling.value ? customBorder.value : null
       });
@@ -162,6 +186,23 @@ async function startNewTask() {
               style="width: 100%"
             />
           </n-form-item> -->
+
+          <n-form-item label="自动保存">
+            <n-input-group>
+              <n-input 
+                v-model:value="autoSaveDir" 
+                placeholder="任务完成后自动保存到此目录 (可选)" 
+                readonly
+                @click="pickAutoSaveDir"
+              />
+              <n-button type="primary" ghost @click="pickAutoSaveDir">
+                选择目录
+              </n-button>
+              <n-button v-if="autoSaveDir" @click="autoSaveDir = null">
+                清除
+              </n-button>
+            </n-input-group>
+          </n-form-item>
 
           <n-form-item label="高级参数">
             <n-space align="center">

@@ -32,13 +32,15 @@ async fn run_super_resolution(
     state: tauri::State<'_, Arc<AppState>>,
     input_path: String,
     model_name: String,
+    output_path: Option<String>,
     overlap: Option<usize>,
     border: Option<usize>,
 ) -> Result<usize, String> {
     tracing::info!(
-        "Command 'run_super_resolution' invoked for {}, model: {}, overlap: {:?}, border: {:?}",
+        "Command 'run_super_resolution' invoked for {}, model: {}, output: {:?}, overlap: {:?}, border: {:?}",
         input_path,
         model_name,
+        output_path,
         overlap,
         border
     );
@@ -50,7 +52,7 @@ async fn run_super_resolution(
         model_name,
         overlap,
         border,
-        output_path: None,
+        output_path,
     };
 
     match manager.run_inference(sr_info).await {
@@ -104,8 +106,7 @@ async fn get_result_image(
         for y in 0..height {
             for x in 0..width {
                 for c in 0..channels {
-                    let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
-                    pixels.push(val);
+                    pixels.push(data[[0, c, y, x]] as u8);
                 }
             }
         }
@@ -137,42 +138,7 @@ async fn save_result_image(
     task_id: usize,
     output_path: String,
 ) -> Result<(), String> {
-    let manager = state.sr_pipline.clone();
-
-    if let Some(info) = manager.get_result(task_id).await {
-        let data = &info.image_data;
-        let shape = data.shape();
-        let channels = shape[1];
-        let height = shape[2];
-        let width = shape[3];
-
-        let mut pixels = Vec::with_capacity(height * width * channels);
-        for y in 0..height {
-            for x in 0..width {
-                for c in 0..channels {
-                    let val = (data[[0, c, y, x]].clamp(0.0, 1.0) * 255.0) as u8;
-                    pixels.push(val);
-                }
-            }
-        }
-
-        let img_dynamic = if channels == 4 {
-            image::RgbaImage::from_raw(width as u32, height as u32, pixels)
-                .map(image::DynamicImage::ImageRgba8)
-        } else {
-            image::RgbImage::from_raw(width as u32, height as u32, pixels)
-                .map(image::DynamicImage::ImageRgb8)
-        };
-
-        if let Some(img) = img_dynamic {
-            img.save(output_path).map_err(|e| e.to_string())?;
-            Ok(())
-        } else {
-            Err("Failed to create image from raw pixels".to_string())
-        }
-    } else {
-        Err("Result not found or not yet ready".to_string())
-    }
+    state.sr_pipline.save_image(task_id, output_path).await
 }
 
 use tauri::Manager;
@@ -207,6 +173,21 @@ async fn get_model_config(
         .ok_or_else(|| format!("Model config for {} not found", model_name))
 }
 
+#[tauri::command]
+async fn set_auto_save_dir(
+    _state: tauri::State<'_, Arc<AppState>>,
+    _path: Option<String>,
+) -> Result<(), String> {
+    Err("set_auto_save_dir is deprecated, use output_path in run_super_resolution".to_string())
+}
+
+#[tauri::command]
+async fn get_auto_save_dir(
+    _state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logging
@@ -229,6 +210,8 @@ pub fn run() {
             get_available_models,
             get_default_model,
             get_model_config,
+            set_auto_save_dir,
+            get_auto_save_dir,
         ])
         .manage(Arc::new(AppState::default()))
         .setup(|app| {
