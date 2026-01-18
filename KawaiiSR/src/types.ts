@@ -11,5 +11,11 @@ export interface Task {
     totalTiles?: number;
     resultImageSrc?: string;
     originalImageSrc?: string;
+    inputSize?: number;
+    outputSize?: number;
+    inputWidth?: number;
+    inputHeight?: number;
+    outputWidth?: number;
+    outputHeight?: number;
     startTime: number;
 }

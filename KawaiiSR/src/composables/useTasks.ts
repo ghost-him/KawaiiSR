@@ -42,10 +42,11 @@ export function useTasks() {
 
     async function fetchResultImage(id: number) {
         try {
-            const bytes = await invoke<Uint8Array>("get_result_image", { taskId: id });
-            const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+            const bytes = await invoke<number[]>("get_result_image", { taskId: id });
+            const uint8Bytes = new Uint8Array(bytes);
+            const blob = new Blob([uint8Bytes], { type: "image/png" });
             const url = URL.createObjectURL(blob);
-            updateTask(id, { resultImageSrc: url });
+            updateTask(id, { resultImageSrc: url, outputSize: uint8Bytes.length });
         } catch (err) {
             console.error(`Failed to fetch image for task ${id}:`, err);
             updateTask(id, { status: 'failed' });

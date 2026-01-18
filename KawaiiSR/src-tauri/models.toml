@@ -2,10 +2,11 @@
 # 此文件定义了所有可用的超分辨率模型及其参数
 
 [models.kawaii_sr]
+# 该模型的输入为 RGB 的 (B, C, H, W) = (-1, 3, 128, 128)，-1表示动态batch大小
 file_path = "onnx/kawaii_sr.onnx"
 # 模型期望的输入尺寸
-input_width = 128
-input_height = 128
+input_width = 128  # W
+input_height = 128 # H
 # 切块时的重叠大小（用于避免边界伪影）
 overlap = 32
 # 边界填充大小（在切块前添加的边界）
@@ -14,6 +15,7 @@ border = 64
 
 # 如果要添加自己的模型，则将下面的配置取消注释并进行修改
 # [models.kawaii_sr_anime]
+# 该模型的输入为 RGB 的 (B, C, H, W) = (-1, 3, 128, 64)
 # file_path = "onnx/kawaii_sr_128x64.onnx"
 # input_width = 64
 # input_height = 128

@@ -38,6 +38,15 @@ function statusType(status: string) {
     }
 }
 
+function formatBytes(bytes: number | undefined) {
+    if (bytes === undefined) return '-';
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 const progressText = computed(() => {
   const t = props.task;
   if (t.status === 'completed') return '转换已完成，结果已就绪';
@@ -140,6 +149,15 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
           <n-descriptions-item label="倍数">
             {{ task.scaleFactor }}x
           </n-descriptions-item>
+          <n-descriptions-item label="图片大小">
+            <span v-if="task.inputSize">
+              {{ task.inputWidth }}x{{ task.inputHeight }} ({{ formatBytes(task.inputSize) }})
+              <span v-if="task.outputSize" style="margin-left: 8px; color: #18a058; font-weight: bold;">
+                → {{ task.inputWidth! * task.scaleFactor }}x{{ task.inputHeight! * task.scaleFactor }} ({{ formatBytes(task.outputSize) }})
+              </span>
+            </span>
+            <span v-else>-</span>
+          </n-descriptions-item>
         </n-descriptions>
       </n-card>
       
@@ -165,7 +183,9 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
     <div class="result-section" v-if="task.originalImageSrc || task.resultImageSrc">
       <n-card 
         :bordered="false" 
-        :title="task.resultImageSrc ? '对比预览 (中间滑块可拖动)' : '原图预览'" 
+        :title="task.resultImageSrc ? 
+          `对比预览 (${task.inputWidth}x${task.inputHeight}, ${formatBytes(task.inputSize)} → ${task.inputWidth! * task.scaleFactor}x${task.inputHeight! * task.scaleFactor}, ${formatBytes(task.outputSize)})` : 
+          `原图预览 (${task.inputWidth}x${task.inputHeight}, ${formatBytes(task.inputSize)})`" 
         size="small" 
         class="result-card"
         content-style="display: flex; flex-direction: column; overflow: hidden; height: 100%;"

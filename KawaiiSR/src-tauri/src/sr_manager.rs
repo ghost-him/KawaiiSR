@@ -35,6 +35,9 @@ pub struct SRInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMetaStruct {
     pub total_tiles: usize,
+    pub input_size: u64,
+    pub input_width: u32,
+    pub input_height: u32,
 }
 
 /// 对内表示的信息，可见范围：SRManager 以及 image_stitcher
@@ -252,6 +255,7 @@ impl SRManagerInner {
 
         // 1. 仅获取图片尺寸，不加载完整图片数据
         let (width, height) = image::image_dimensions(&sr_info.input_path)?;
+        let input_size = std::fs::metadata(&sr_info.input_path)?.len();
 
         let current_task_id = self.id_generator.generate_id();
 
@@ -268,6 +272,9 @@ impl SRManagerInner {
             current_task_id,
             TaskMetaStruct {
                 total_tiles: info.total_tiles(),
+                input_size,
+                input_width: width,
+                input_height: height,
             },
         );
 

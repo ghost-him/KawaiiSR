@@ -14,6 +14,9 @@ const { addTask, selectTask, getAvailableModels, getDefaultModel } = useTasks();
 
 interface TaskMetaStruct {
   total_tiles: number;
+  input_size: number;
+  input_width: number;
+  input_height: number;
 }
 
 const availableModels = ref<{ label: string, value: string }[]>([]);
@@ -66,6 +69,9 @@ async function startNewTask() {
         progress: 0, 
         completedTiles: 0,
         totalTiles: metadata.total_tiles,
+        inputSize: metadata.input_size,
+        inputWidth: metadata.input_width,
+        inputHeight: metadata.input_height,
         startTime: Date.now()
       };
       
@@ -129,7 +135,6 @@ async function startNewTask() {
 
 <style scoped>
 .createTaskPage {
-  max-width: 800px;
-  margin: 0 auto;
+  width: 100%;
 }
 </style>
