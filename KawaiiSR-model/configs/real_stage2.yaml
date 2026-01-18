@@ -26,8 +26,8 @@ loss_global_scale: 1.0    # 恢复标准尺度
 loss_weights:
   pixel: 1.0      
   frequency: 0.2  
-  perceptual: 1.0 # 开启感官损失
-  vgg: 0.0        # 可选，这里选 perceptual (LPIPS) 优先
+  perceptual: 0.0
+  vgg: 0.05
   adversarial: 0.0
 
 loss_options:
