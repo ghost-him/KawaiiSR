@@ -11,7 +11,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/ghost-him/KawaiiSR">
-    <img src="KawaiiSR/src-tauri/icons/icon.png" alt="Logo" width="400" height="400">
+    <img src="KawaiiSR/src-tauri/icons/icon.png" alt="Logo" width="200" height="200">
   </a>
 
   <h3 align="center">KawaiiSR</h3>
@@ -147,6 +147,8 @@
 3.  提交 Issue 或 Pull Request，一起完善这个项目 🥂
 
 **(●'◡'●) 感谢所有关注 KawaiiSR 的开发者与用户！**
+
+> 点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [contributors-shield]: https://img.shields.io/github/contributors/ghost-him/KawaiiSR.svg?style=for-the-badge
