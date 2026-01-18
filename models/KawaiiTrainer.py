@@ -215,7 +215,21 @@ class KawaiiTrainer:
             state_dict = payload['model_state_dict']
         else:
             state_dict = payload
-        self.model.load_state_dict(state_dict, strict=strict)
+        
+        # 动态处理形状不匹配的情况（如小波基改变）
+        model_state = self.model.state_dict()
+        filtered_state = {}
+        for k, v in state_dict.items():
+            if k in model_state:
+                if v.shape == model_state[k].shape:
+                    filtered_state[k] = v
+                else:
+                    self.logger.warning(f"[Weight Load] 忽略键 {k}: 形状不匹配 ({v.shape} vs {model_state[k].shape})。可能是小波基已更改。")
+            else:
+                if strict:
+                    self.logger.warning(f"[Weight Load] 键 {k} 在模型中不存在。")
+
+        self.model.load_state_dict(filtered_state, strict=False)
         return payload if isinstance(payload, dict) else {'model_state_dict': state_dict}
 
     def _load_resume_state(self, path: str) -> Dict[str, Any]:

@@ -43,9 +43,18 @@ def load_model(weights_path: Path, device: torch.device, config_path: Path | Non
     state_dict, cfg_from_ckpt = _load_checkpoint(weights_path, device)
     model_cfg = _resolve_model_config(cfg_from_ckpt, config_path)
 
-
     model = KawaiiSR(**model_cfg).to(device)
-    model.load_state_dict(state_dict, strict=True)
+    
+    # 过滤掉形状不匹配的权重（如小波滤波器）
+    model_state = model.state_dict()
+    filtered_state = {}
+    for k, v in state_dict.items():
+        if k in model_state and v.shape == model_state[k].shape:
+            filtered_state[k] = v
+        elif k in model_state:
+            print(f"警告：忽略键 {k}，因为形状不匹配 ({v.shape} vs {model_state[k].shape})。")
+            
+    model.load_state_dict(filtered_state, strict=False)
     model.eval()
     return model
 
