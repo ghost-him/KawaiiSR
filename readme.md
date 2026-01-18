@@ -19,7 +19,7 @@
   <p align="center">
     一款专注于动漫与实景图像的现代化 AI 超分辨率工具
     <br />
-    让画质“超清晰、超可爱”的魔法喵~
+    <span style="font-size: 0.9em; color: #888;">画質を「超くっきり・超かわいく」する魔法だにゃん✨</span>
     <br />
     <br />
     <a href="https://github.com/ghost-him/KawaiiSR/releases"><strong>📦 下载体验</strong></a>
@@ -148,7 +148,7 @@
 
 **(●'◡'●) 感谢所有关注 KawaiiSR 的开发者与用户！**
 
-> 点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！
+> ~~点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！点个星星谢谢喵！~~
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [contributors-shield]: https://img.shields.io/github/contributors/ghost-him/KawaiiSR.svg?style=for-the-badge
