@@ -36,8 +36,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p KawaiiSR/src-tauri/onnx
-          curl -L -o KawaiiSR/src-tauri/onnx/KawaiiSR-precise.onnx https://github.com/ghost-him/KawaiiSR/releases/download/model/KawaiiSR-precise.onnx
-
+          gh release download model -R ghost-him/KawaiiSR -D KawaiiSR/src-tauri/onnx -p "KawaiiSR-precise.onnx" --clobber
+      
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
