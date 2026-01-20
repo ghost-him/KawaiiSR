@@ -3,9 +3,9 @@
 # 可以根据需要添加或修改模型配置
 # 不推荐修改该文件中的已有模型配置，建议添加新的模型配置
 
-[models.KawaiiSR]
+[models.KawaiiSR-precise]
 # 该模型的输入为 RGB 的 (B, C, H, W) = (-1, 3, 128, 128)，-1表示动态batch大小
-file_path = "onnx/kawaii_sr.onnx"
+file_path = "onnx/KawaiiSR-precise.onnx"
 # 模型期望的输入尺寸
 input_width = 128  # W
 input_height = 128 # H
@@ -22,9 +22,9 @@ output_node = "output"
 # 批处理大小，-1 表示支持动态 batch 大小
 batch_size = -1
 # 模型描述
-description = "KawaiiSR 动漫超分辨率模型，2倍放大"
+description = "KawaiiSR 动漫超分辨率模型，2倍放大，精准还原任何细节"
 # 归一化配置（该配置一定要放在最后，不然无法正确的解析）
-[models.KawaiiSR.normalization]
+[models.KawaiiSR-precise.normalization]
 range = "zero_to_one"           # zero_to_one 表示将输入图像像素值归一化到 [0, 1] 范围内, minus_one_to_one 表示归一化到 [-1, 1] 范围内, zero_to_255 表示保持在 [0, 255] 范围内
 # mean = [0.485, 0.456, 0.406]  # 可选，用于高级归一化，当前模型无需配置该项
 # std = [0.229, 0.224, 0.225]   # 可选，用于高级归一化，当前模型无需配置该项
@@ -41,6 +41,7 @@ range = "zero_to_one"           # zero_to_one 表示将输入图像像素值归�
 # scale = 4
 # input_node = "input"
 # output_node = "output"
+# batch_size = -1
 # description = "自定义动漫模型，4倍放大"
 # [models.kawaii_sr_anime.normalization]
 # range = "zero_to_one"
@@ -50,4 +51,4 @@ range = "zero_to_one"           # zero_to_one 表示将输入图像像素值归�
 
 # 默认模型
 [defaults]
-model_name = "KawaiiSR"
+model_name = "KawaiiSR-precise"
