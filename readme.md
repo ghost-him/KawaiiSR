@@ -17,7 +17,7 @@
   <h3 align="center">KawaiiSR</h3>
 
   <p align="center">
-    一款专注于动漫与实景图像的现代化 AI 超分辨率工具
+    一款专注于动漫的现代化 AI 超分辨率工具
     <br />
     <span style="font-size: 0.9em; color: #888;">画質を「超くっきり・超かわいく」する魔法だにゃん✨</span>
     <br />
@@ -42,7 +42,7 @@
   </a>
 </div>
 
-**KawaiiSR** 是一款融合了高性能推理与现代化 UI 的 AI 超分辨率工具。它不仅仅是一个好看的桌面应用，其背后是由 **数据生成 (Datagen) + 模型训练 (Training) + 极速推理 (Inference)** 构成的完整技术生态。
+**KawaiiSR** 是一款融合了高性能推理与现代化 UI 的 AI 超分辨率工具。
 
 ## 🔍 效果对比
 
