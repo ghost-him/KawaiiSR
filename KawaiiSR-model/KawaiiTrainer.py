@@ -671,6 +671,11 @@ class KawaiiTrainer:
             # 验证
             if has_validation and (epoch % self.cfg.val_every) == 0:
                 self.model.eval()
+                # 重置指标状态，确保验证时不受训练数据影响
+                self.psnr.reset()
+                self.ssim.reset()
+                if self.lpips is not None:
+                    self.lpips.reset()
                 val_start_wall = time.perf_counter()
                 val_losses = []
                 val_psnr = []
