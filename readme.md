@@ -61,7 +61,7 @@
 
 *   **全流程代码**：包含从 `sr-datagen` 数据集构建，到 `KawaiiSR-model` 模型训练的完整管线，确保模型针对特定场景的最优表现。
 *   **先进的模型架构**：核心算法基于 **CVPR 2023 HAT (Hybrid Attention Transformer)** 改进，针对动漫线条边缘与色彩还原进行了专项优化。
-*   **混合损失函数策略**：结合像素损失（Pixel Loss）、伪影抑制（Artifact Loss）和对抗损失（GAN Loss），有效平衡细节恢复与噪点去除。
+*   **混合损失函数策略**：结合像素损失、动漫特化感知和对抗损失，有效平衡细节恢复与噪点去除。
 *   **极致的 Native 性能**：客户端采用 **Rust + Tauri** 构建，结合 **ONNX Runtime** 与 DirectML 硬件加速，实现轻量级与高性能的完美结合。
 
 <!-- ROADMAP -->
