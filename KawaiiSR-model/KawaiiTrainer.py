@@ -454,6 +454,20 @@ class KawaiiTrainer:
             raise RuntimeError('训练 DataLoader 未包含任何 batch。')
 
         scheduler_total_steps = steps_per_epoch * self.cfg.epochs
+        
+        # 恢复训练一致性检测器
+        if resume_state_payload:
+            saved_total_steps = resume_state_payload.get('scheduler_total_steps')
+            if saved_total_steps is not None:
+                saved_total_steps = int(saved_total_steps)
+                if saved_total_steps != scheduler_total_steps:
+                    self._console(f"[Resume Detector] 状态：不支持完全一致的恢复训练。")
+                    self._console(f"原因：检测到总训练步数不匹配。当前配置/数据集预期总步数为 {scheduler_total_steps} "
+                                  f"(steps_per_epoch: {steps_per_epoch} * epochs: {self.cfg.epochs})，"
+                                  f"但存档记录为 {saved_total_steps}。这通常意味着您更改了数据集大小或训练周期配置。")
+                else:
+                    self._console("[Resume Detector] 状态：支持一致性恢复训练（步数与配置匹配）。")
+
         if resume_state_payload and resume_state_payload.get('scheduler_total_steps'):
             scheduler_total_steps = int(resume_state_payload['scheduler_total_steps'])
 
