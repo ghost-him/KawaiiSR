@@ -38,7 +38,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p KawaiiSR/src-tauri/onnx
-          gh release download model -R ghost-him/KawaiiSR -D KawaiiSR/src-tauri/onnx -p "KawaiiSR-precise.onnx" --clobber
+          gh release download model -R ghost-him/KawaiiSR -D KawaiiSR/src-tauri/onnx -p "KawaiiSR-precise.onnx" -p "KawaiiSR-refined.onnx" --clobber
       
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
