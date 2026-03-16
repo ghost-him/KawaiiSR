@@ -17,7 +17,7 @@ train:
   val_every: 1
   log_every: 100
   early_stopping_patience: 10
-  checkpoint_dir: ./models/checkpoints/real_stage2
+  checkpoint_dir: ./KawaiiSR-model/checkpoints/real_stage2
   auto_resume: false
   torch_compile: false
 

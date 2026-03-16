@@ -17,7 +17,7 @@ train:
   val_every: 1
   log_every: 5
   early_stopping_patience: 1
-  checkpoint_dir: ./models/checkpoints/quick
+  checkpoint_dir: ./KawaiiSR-model/checkpoints/quick
   auto_resume: false
   torch_compile: false
 

@@ -65,8 +65,10 @@ def main():
         # 如果命令行没有指定恢复参数，检查配置文件中的 auto_resume
         if cfg.auto_resume:
             ckpt_dir = Path(cfg.checkpoint_dir)
-            auto_weights = ckpt_dir / 'last_weights.pth'
-            auto_state = ckpt_dir / 'last_state.pth'
+            # 根据是否开启 compile 决定文件名前缀
+            prefix = "compiled_" if cfg.torch_compile else ""
+            auto_weights = ckpt_dir / f'{prefix}last_weights.pth'
+            auto_state = ckpt_dir / f'{prefix}last_state.pth'
 
             if auto_weights.exists() and auto_state.exists():
                 print(f'[Auto Resume] 发现上次的检查点，准备恢复训练: {auto_weights}')

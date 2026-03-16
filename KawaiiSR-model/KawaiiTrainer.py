@@ -185,12 +185,12 @@ class KawaiiTrainer:
         if not compile_enabled:
             self._console('[Console] torch.compile 未启用（配置为 false）。')
             return
-        if not hasattr(torch, 'compile'):
-            if hasattr(torch, 'compile'):
-                self.model = torch.compile(self.model)
-                self._console('[Console] torch.compile 已启用，生成器将以编译模式训练。')
-            else:
-                self._console('[Console] 当前 PyTorch 版本不支持 torch.compile，保持 eager 模式。')
+
+        if hasattr(torch, 'compile'):
+            self.model = torch.compile(self.model)
+            self._console('[Console] torch.compile 已启用，生成器将以编译模式训练。')
+        else:
+            self._console('[Console] 当前 PyTorch 版本不支持 torch.compile，保持 eager 模式。')
 
     def _init_scheduler(self, total_steps: int) -> None:
         """按 batch 建立余弦退火调度器。"""
@@ -217,7 +217,12 @@ class KawaiiTrainer:
             state_dict = payload
         
         # 动态处理形状不匹配的情况（如小波基改变）
-        model_state = self.model.state_dict()
+        # 如果模型已编译，使用原始模型的 state_dict 进行比对
+        if hasattr(self.model, "_orig_mod"):
+            model_state = self.model._orig_mod.state_dict()
+        else:
+            model_state = self.model.state_dict()
+
         filtered_state = {}
         for k, v in state_dict.items():
             if k in model_state:
@@ -229,7 +234,11 @@ class KawaiiTrainer:
                 if strict:
                     self.logger.warning(f"[Weight Load] 键 {k} 在模型中不存在。")
 
-        self.model.load_state_dict(filtered_state, strict=False)
+        # 同样，对于编译后的模型，加载也要作用于原始模块，或者依赖 load_state_dict 的自动处理
+        if hasattr(self.model, "_orig_mod"):
+            self.model._orig_mod.load_state_dict(filtered_state, strict=False)
+        else:
+            self.model.load_state_dict(filtered_state, strict=False)
         return payload if isinstance(payload, dict) else {'model_state_dict': state_dict}
 
     def _load_resume_state(self, path: str) -> Dict[str, Any]:
@@ -324,10 +333,20 @@ class KawaiiTrainer:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
 
+        # 获取原始 state_dict，避免 torch.compile 带来的 _orig_mod. 前缀
+        if hasattr(self.model, "_orig_mod"):
+            model_state = self.model._orig_mod.state_dict()
+        else:
+            model_state = self.model.state_dict()
+
         weights_payload = {
-            'model_state_dict': self.model.state_dict(),
-            'config': dict(self.cfg.__dict__),
+            "model_state_dict": model_state,
+            "config": dict(self.cfg.__dict__),
         }
+
+        # 根据是否开启 compile 决定文件名前缀
+        prefix = "compiled_" if getattr(self.cfg, "torch_compile", False) else ""
+
         state_payload = {
             'epoch': int(epoch),
             'global_step': int(self.global_step),
@@ -339,26 +358,27 @@ class KawaiiTrainer:
             'scheduler_total_steps': getattr(self.sched, 'T_max', None) if self.sched else None,
         }
 
-        torch.save(weights_payload, checkpoint_dir / 'last_weights.pth')
-        torch.save(state_payload, checkpoint_dir / 'last_state.pth')
+        torch.save(weights_payload, checkpoint_dir / f"{prefix}last_weights.pth")
+        torch.save(state_payload, checkpoint_dir / f"{prefix}last_state.pth")
 
         if is_best:
-            torch.save(weights_payload, checkpoint_dir / 'best_weights.pth')
-            torch.save(state_payload, checkpoint_dir / 'best_state.pth')
+            torch.save(weights_payload, checkpoint_dir / f"{prefix}best_weights.pth")
+            torch.save(state_payload, checkpoint_dir / f"{prefix}best_state.pth")
+        
         dt = time.perf_counter() - t0
-        self.logger.info(f"Checkpoint saved (epoch={epoch+1}, best={is_best}) in {dt:.2f}s")
-       
+        
         if self.gan_enabled and self.disc is not None and self.disc_opt is not None:
             disc_weights_payload = {'model_state_dict': self.disc.state_dict()}
             disc_state_payload = {'optimizer_state_dict': self.disc_opt.state_dict()}
             
-            torch.save(disc_weights_payload, checkpoint_dir / 'disc_weight.pth')
-            torch.save(disc_state_payload, checkpoint_dir / 'disc_state.pth')
+            torch.save(disc_weights_payload, checkpoint_dir / f'{prefix}disc_weight.pth')
+            torch.save(disc_state_payload, checkpoint_dir / f'{prefix}disc_state.pth')
 
         dt = time.perf_counter() - t0
         log_msg = (
             f"Checkpoint saved (epoch={epoch+1}, best={is_best}"
             f"{' +Disc' if self.gan_enabled else ''}) in {dt:.2f}s"
+            f" [Prefix: {prefix if prefix else 'None'}]"
         )
         self.logger.info(log_msg)
 
@@ -407,8 +427,9 @@ class KawaiiTrainer:
             if self.gan_enabled:
                 self._console("[Console] GAN已启用, 尝试从固定路径恢复判别器...")
                 checkpoint_dir = Path(self.cfg.checkpoint_dir)
-                disc_weights_path = checkpoint_dir / 'disc_weight.pth'
-                disc_state_path = checkpoint_dir / 'disc_state.pth'
+                prefix = "compiled_" if getattr(self.cfg, "torch_compile", False) else ""
+                disc_weights_path = checkpoint_dir / f'{prefix}disc_weight.pth'
+                disc_state_path = checkpoint_dir / f'{prefix}disc_state.pth'
 
                 if disc_weights_path.exists() and disc_state_path.exists():
                     # 加载判别器权重
